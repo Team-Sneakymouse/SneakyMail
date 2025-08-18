@@ -18,6 +18,10 @@ class Placeholders : PlaceholderExpansion() {
         return SneakyMail.VERSION
     }
 
+    override fun persist(): Boolean {
+        return true
+    }
+
     override fun onPlaceholderRequest(player: Player, identifier: String): String? {
         return when (identifier) {
             "unread_count" -> {

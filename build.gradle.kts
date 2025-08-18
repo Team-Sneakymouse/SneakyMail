@@ -22,7 +22,7 @@ dependencies {
     compileOnly("io.papermc.paper:paper-api:1.20.6-R0.1-SNAPSHOT")
 	compileOnly("me.clip:placeholderapi:2.11.6")
 //	compileOnly(files("libs/SneakyPocketbase-1.0.jar"))
-	compileOnly(files("C:\\Users\\DaniDipp\\Downloads\\1.20.6\\SneakyPocketbase-1.0.jar"))
+	compileOnly(files("C:\\Users\\DaniDipp\\Downloads\\1.21.4\\SneakyPocketbase-1.0.jar"))
 }
 
 tasks.jar {

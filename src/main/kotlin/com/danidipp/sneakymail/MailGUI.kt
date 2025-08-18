@@ -1,6 +1,9 @@
 package com.danidipp.sneakymail
 
 import net.kyori.adventure.text.Component
+import net.kyori.adventure.text.format.NamedTextColor
+import net.kyori.adventure.text.format.TextDecoration
+import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Bukkit
 import org.bukkit.Material
 import org.bukkit.entity.Player
@@ -31,10 +34,15 @@ class MailGUI(private val player: Player) : InventoryHolder {
             if (player.uniqueId != UUID.fromString(mail.value.recipient_uuid)) continue
             val item = ItemStack(Material.RABBIT_FOOT)
             val meta = item.itemMeta
-            val sender = mail.value.sender_name.ifEmpty { "Unknown" }
+            val sender = mail.value.sender_name.ifEmpty { "<white>Unknown</white>" }
 
-            meta.itemName(Component.text("Mail from $sender"))
-            meta.lore(mail.value.note.split('\n').map { Component.text(it) })
+            meta.itemName(Component.text("Mail from").append(MiniMessage.miniMessage().deserialize(sender))
+                .colorIfAbsent(NamedTextColor.YELLOW))
+            meta.lore(listOf(
+                MiniMessage.miniMessage().deserialize(mail.value.note)
+                    .colorIfAbsent(NamedTextColor.GRAY)
+                    .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE)
+            ))
             meta.setCustomModelData(75)
             val data = meta.persistentDataContainer
             data.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, mail.key)

@@ -6,15 +6,14 @@ import com.danidipp.sneakypocketbase.SneakyPocketbase
 import io.github.agrevster.pocketbaseKotlin.dsl.query.Filter
 import io.github.agrevster.pocketbaseKotlin.dsl.query.SortFields
 import io.github.agrevster.pocketbaseKotlin.services.RealtimeService.RealtimeActionType.*
+import kotlinx.serialization.json.Json
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import java.util.logging.Logger
 
-class PocketbaseListener : Listener {
-    private val logger: Logger
-    constructor(logger: Logger, sneakyPB: SneakyPocketbase) {
-        this.logger = logger
+class PocketbaseListener(private val logger: Logger, sneakyPB: SneakyPocketbase) : Listener {
+    init {
         logger.warning("Registering callback for when Pocketbase is loaded")
         sneakyPB.onPocketbaseLoaded {
             logger.warning("Pocketbase is loaded. Now subscribing to mail events")
@@ -42,10 +41,11 @@ class PocketbaseListener : Listener {
     fun onMailEvent(event: AsyncPocketbaseEvent) {
         if (event.collectionName != "lom2_mail") return
         logger.warning("Received mail event: ${event.action}")
-        val mailRecord = event.data.parseRecord<MailRecord>()
+        val mailRecord = event.data.parseRecord<MailRecord>(Json { ignoreUnknownKeys = true })
 
         when (event.action) {
             CREATE ->{
+                logger.info("${mailRecord.recipient_name} has received a new mail")
                 mailRecord.checkUuid()
                 SneakyMail.mail[mailRecord.id!!] = mailRecord
                 Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
@@ -64,8 +64,16 @@ class PocketbaseListener : Listener {
                 val oldRecord = SneakyMail.mail[mailRecord.id]!!
                 if (!oldRecord.available && mailRecord.available) {
                     // Mail has been marked as available again
+                    oldRecord.apply {
+                        sender_uuid = mailRecord.sender_uuid
+                        sender_name = mailRecord.sender_name
+                        recipient_uuid = mailRecord.recipient_uuid
+                        recipient_name = mailRecord.recipient_name
+                        rewards = mailRecord.rewards
+                        note = mailRecord.note
+                    }
                     Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
-                        val mailEvent = NewMailEvent(mailRecord)
+                        val mailEvent = NewMailEvent(oldRecord)
                         Bukkit.getPluginManager().callEvent(mailEvent)
                     })
                 } else {

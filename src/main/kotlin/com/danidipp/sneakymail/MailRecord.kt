@@ -2,6 +2,7 @@
 package com.danidipp.sneakymail
 
 import com.danidipp.sneakypocketbase.BaseRecord
+import com.danidipp.sneakypocketbase.PBRunnable
 import com.danidipp.sneakypocketbase.SneakyPocketbase
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerialName
@@ -34,7 +35,7 @@ data class MailRecord(
     var sender_name: String,
     var recipient_uuid: String,
     var recipient_name: String,
-    val rewards: List<MailReward>?,
+    var rewards: List<MailReward>?,
     var available: Boolean,
     var note: String
 ): BaseRecord() {
@@ -42,8 +43,7 @@ data class MailRecord(
         if (recipient_uuid.isEmpty()) {
             if ( recipient_name.isNotEmpty()) {
                 val player = Bukkit.getOfflinePlayerIfCached(recipient_name)
-                if (player != null)
-                    recipient_uuid = player.uniqueId.toString()
+                recipient_uuid = player?.uniqueId.toString()
             }
         } else if (!recipient_uuid.contains('-')) {
             recipient_uuid = recipient_uuid.replaceFirst(
@@ -61,16 +61,14 @@ data class MailRecord(
         available = false
         val id = this.id!!
         val data = Json.encodeToString(serializer(), this)
-        Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), Runnable {
-            runBlocking {
-                SneakyPocketbase.getInstance().pb().records.update<MailRecord>("lom2_mail", id, data)
-            }
+        Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), PBRunnable {
+            SneakyPocketbase.getInstance().pb().records.update<MailRecord>("lom2_mail", id, data)
         })
         if (rewards == null) {
             player.sendMessage(Component.text("This mail has no rewards", NamedTextColor.RED))
             return false
         }
-        for (reward in rewards) {
+        for (reward in rewards ?: emptyList()) {
             when (reward) {
                 is MailReward.ItemReward -> {
                     player.sendMessage(Component.text("Item rewards are not implemented yet", NamedTextColor.RED))
