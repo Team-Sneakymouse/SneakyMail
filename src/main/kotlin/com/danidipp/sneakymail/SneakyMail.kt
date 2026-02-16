@@ -8,12 +8,16 @@ import java.util.concurrent.ConcurrentHashMap
 
 class SneakyMail : JavaPlugin() {
     val mailKey = NamespacedKey(this, "mail")
+    lateinit var mailSender: MailSender
+
     override fun onLoad() {
         instance = this
         saveDefaultConfig()
     }
 
     override fun onEnable() {
+        mailSender = MailSender(logger, SneakyPocketbase.getInstance())
+
         Bukkit.getServer().commandMap.registerAll(IDENTIFIER, listOf(
             MailCommand(),
             MailcheckCommand()
