@@ -34,15 +34,15 @@ class MailGUI(private val player: Player) : InventoryHolder {
             if (player.uniqueId != UUID.fromString(mail.value.recipient_uuid)) continue
             val item = ItemStack(Material.RABBIT_FOOT)
             val meta = item.itemMeta
-            val sender = mail.value.sender_name.ifEmpty { "<white>Unknown</white>" }
+            val sender = mail.value.sender_name.ifEmpty { "Unknown" }
 
-            meta.itemName(Component.text("Mail from").append(MiniMessage.miniMessage().deserialize(sender))
+            meta.itemName(Component.text("Mail from ").append(MiniMessage.miniMessage().deserialize(sender))
                 .colorIfAbsent(NamedTextColor.YELLOW))
-            meta.lore(listOf(
-                MiniMessage.miniMessage().deserialize(mail.value.note)
+            meta.lore(mail.value.note.replace("\r\n", "\n").split('\n').map { line ->
+                MiniMessage.miniMessage().deserialize(line)
                     .colorIfAbsent(NamedTextColor.GRAY)
                     .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE)
-            ))
+            })
             meta.setCustomModelData(75)
             val data = meta.persistentDataContainer
             data.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, mail.key)
@@ -66,6 +66,13 @@ class MailGUI(private val player: Player) : InventoryHolder {
             fun onInventoryClick(event: InventoryClickEvent) {
                 if (event.inventory.holder !is MailGUI) return
                 event.isCancelled = true
+
+                if (!SneakyMail.getInstance().isEnabled) {
+                    event.whoClicked.sendMessage(Component.text("SneakyMail is currently not available", NamedTextColor.RED))
+                    event.whoClicked.closeInventory()
+                    return
+                }
+
                 val item = event.currentItem ?: return
                 val data = item.itemMeta.persistentDataContainer
                 val mailId = data.get(SneakyMail.getInstance().mailKey, PersistentDataType.STRING) ?: return

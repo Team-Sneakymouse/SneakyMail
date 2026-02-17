@@ -25,12 +25,7 @@ class NewMailEvent(val record: MailRecord) : Event() {
             @EventHandler
             fun onNewMail(event: NewMailEvent) {
                 val record = event.record
-                val uuid = runCatching { UUID.fromString(record.recipient_uuid) }.onFailure { it.printStackTrace() }.getOrNull()
-                if (uuid == null) {
-                    SneakyMail.getInstance().logger.warning("Invalid UUID for MailRecord ${record.id}: ${record.sender_uuid}")
-                    return
-                }
-                val recipient = Bukkit.getPlayer(uuid) ?: return
+                val recipient = Bukkit.getPlayer(UUID.fromString(record.recipient_uuid)) ?: return
                 val command = "ms cast as ${recipient.name} purchase-newmail"
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)
             }
@@ -40,7 +35,7 @@ class NewMailEvent(val record: MailRecord) : Event() {
                 val player = event.player
                 val mails = SneakyMail.mail.filter {
                     it.value.available &&
-                    it.value.recipient_uuid.isNotEmpty() &&
+                    !it.value.recipient_uuid.isNullOrEmpty() &&
                     UUID.fromString(it.value.recipient_uuid).equals(player.uniqueId)
                 }
                 if (mails.isNotEmpty()) {

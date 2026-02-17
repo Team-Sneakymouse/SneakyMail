@@ -41,10 +41,10 @@ class PocketbaseListener(private val logger: Logger, sneakyPB: SneakyPocketbase)
     fun onMailEvent(event: AsyncPocketbaseEvent) {
         if (event.collectionName != "lom2_mail") return
         logger.warning("Received mail event: ${event.action}")
-        val mailRecord = event.data.parseRecord<MailRecord>(Json { ignoreUnknownKeys = true })
+        val mailRecord = event.data.parseRecord<MailRecord>(Json { ignoreUnknownKeys = true; coerceInputValues = true })
 
         when (event.action) {
-            CREATE ->{
+            CREATE -> {
                 logger.info("${mailRecord.recipient_name} has received a new mail")
                 mailRecord.checkUuid()
                 SneakyMail.mail[mailRecord.id!!] = mailRecord
