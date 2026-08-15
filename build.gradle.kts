@@ -1,6 +1,6 @@
 plugins {
-	kotlin("jvm") version "2.1.0"
-	kotlin("plugin.serialization") version "2.1.0"
+	kotlin("jvm") version "2.2.21"
+	kotlin("plugin.serialization") version "2.2.21"
 }
 
 repositories {
@@ -18,11 +18,9 @@ repositories {
 }
 
 dependencies {
-	compileOnly("org.jetbrains.kotlin:kotlin-stdlib:2.1.0")
     compileOnly("io.papermc.paper:paper-api:1.20.6-R0.1-SNAPSHOT")
 	compileOnly("me.clip:placeholderapi:2.11.6")
-//	compileOnly(files("libs/SneakyPocketbase-1.0.jar"))
-	compileOnly(files("C:\\Users\\DaniDipp\\Downloads\\1.21.4\\SneakyPocketbase-1.0.jar"))
+	compileOnly(files("../SneakyPocketbase/build/libs/SneakyPocketbase-1.0.jar"))
 }
 
 tasks.jar {
