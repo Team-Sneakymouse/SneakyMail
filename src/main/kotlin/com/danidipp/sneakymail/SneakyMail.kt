@@ -1,6 +1,6 @@
 package com.danidipp.sneakymail
 
-import com.danidipp.sneakypocketbase.SneakyPocketbase
+import com.danidipp.sneakypocketbase.PocketbaseProvider
 import org.bukkit.Bukkit
 import org.bukkit.NamespacedKey
 import org.bukkit.plugin.java.JavaPlugin
@@ -16,7 +16,8 @@ class SneakyMail : JavaPlugin() {
     }
 
     override fun onEnable() {
-        mailSender = MailSender(logger, SneakyPocketbase.getInstance())
+        val pocketbase = PocketbaseProvider.getApi()
+        mailSender = MailSender(logger, pocketbase)
 
         Bukkit.getServer().commandMap.registerAll(IDENTIFIER, listOf(
             MailCommand(),
@@ -24,7 +25,7 @@ class SneakyMail : JavaPlugin() {
         ))
 
         Bukkit.getServer().pluginManager.registerEvents(NewMailEvent.listener, this)
-        Bukkit.getServer().pluginManager.registerEvents(PocketbaseListener(logger, SneakyPocketbase.getInstance()), this)
+        Bukkit.getServer().pluginManager.registerEvents(PocketbaseListener(logger, pocketbase), this)
         Bukkit.getServer().pluginManager.registerEvents(MailGUI.listener, this)
 
 

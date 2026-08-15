@@ -1,33 +1,32 @@
 package com.danidipp.sneakymail
 
 import com.danidipp.sneakypocketbase.AsyncPocketbaseEvent
-import com.danidipp.sneakypocketbase.PBRunnable
-import com.danidipp.sneakypocketbase.SneakyPocketbase
-import io.github.agrevster.pocketbaseKotlin.dsl.query.Filter
-import io.github.agrevster.pocketbaseKotlin.dsl.query.SortFields
-import io.github.agrevster.pocketbaseKotlin.services.RealtimeService.RealtimeActionType.*
+import com.danidipp.sneakypocketbase.PocketbaseApi
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import java.util.logging.Logger
 
-class PocketbaseListener(private val logger: Logger, sneakyPB: SneakyPocketbase) : Listener {
+class PocketbaseListener(private val logger: Logger, pocketbase: PocketbaseApi) : Listener {
     init {
         logger.warning("Registering callback for when Pocketbase is loaded")
-        sneakyPB.onPocketbaseLoaded {
+        pocketbase.whenReady {
             logger.warning("Pocketbase is loaded. Now subscribing to mail events")
-            sneakyPB.subscribeAsync("lom2_mail")
+            pocketbase.subscribe("lom2_mail")
 
             logger.warning("Fetching current mail records")
-            Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), PBRunnable {
+            Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), Runnable {
 
-                val mailList = sneakyPB.pb().records.getFullList<MailRecord>(
+                val mailList = pocketbase.getFullList(
                     "lom2_mail",
                     500,
-                    SortFields(),
-                    Filter("available=true")
-                )
+                    "",
+                    "available=true"
+                ).join().map {
+                    Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString<MailRecord>(it)
+                }
                 mailList.forEach {
                     it.checkUuid()
                     SneakyMail.mail[it.id!!] = it
@@ -41,10 +40,11 @@ class PocketbaseListener(private val logger: Logger, sneakyPB: SneakyPocketbase)
     fun onMailEvent(event: AsyncPocketbaseEvent) {
         if (event.collectionName != "lom2_mail") return
         logger.warning("Received mail event: ${event.action}")
-        val mailRecord = event.data.parseRecord<MailRecord>(Json { ignoreUnknownKeys = true; coerceInputValues = true })
+        val mailRecord = Json { ignoreUnknownKeys = true; coerceInputValues = true }
+            .decodeFromString<MailRecord>(event.recordJson)
 
         when (event.action) {
-            CREATE -> {
+            AsyncPocketbaseEvent.Action.CREATE -> {
                 logger.info("${mailRecord.recipient_name} has received a new mail")
                 mailRecord.checkUuid()
                 SneakyMail.mail[mailRecord.id!!] = mailRecord
@@ -53,11 +53,10 @@ class PocketbaseListener(private val logger: Logger, sneakyPB: SneakyPocketbase)
                     Bukkit.getPluginManager().callEvent(mailEvent)
                 })
             }
-            UPDATE -> {
+            AsyncPocketbaseEvent.Action.UPDATE -> {
                 mailRecord.checkUuid()
                 if (!SneakyMail.mail.containsKey(mailRecord.id)) {
-                    event.action = CREATE
-                    onMailEvent(event)
+                    handleCreated(mailRecord)
                     return
                 }
 
@@ -80,13 +79,23 @@ class PocketbaseListener(private val logger: Logger, sneakyPB: SneakyPocketbase)
                     SneakyMail.mail[mailRecord.id!!] = mailRecord
                 }
             }
-            DELETE -> {
+            AsyncPocketbaseEvent.Action.DELETE -> { //TODO: Properly handle deletion
+                SneakyMail.mail[mailRecord.id]?.available = false
                 SneakyMail.mail.remove(mailRecord.id)
             }
             else -> {
-                throw IllegalStateException("${event.action} can never occur. (${event.data.toString()}")
+                throw IllegalStateException("${event.action} can never occur. (${event.recordJson}")
             }
         }
 
+    }
+
+    private fun handleCreated(mailRecord: MailRecord) {
+        logger.info("${mailRecord.recipient_name} has received a new mail")
+        mailRecord.checkUuid()
+        SneakyMail.mail[mailRecord.id!!] = mailRecord
+        Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
+            Bukkit.getPluginManager().callEvent(NewMailEvent(mailRecord))
+        })
     }
 }

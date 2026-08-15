@@ -1,14 +1,12 @@
 @file:Suppress("PROVIDED_RUNTIME_TOO_LOW")
 package com.danidipp.sneakymail
 
-import com.danidipp.sneakypocketbase.BaseRecord
-import com.danidipp.sneakypocketbase.PBRunnable
-import com.danidipp.sneakypocketbase.SneakyPocketbase
-import kotlinx.coroutines.runBlocking
+import com.danidipp.sneakypocketbase.PocketbaseProvider
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
@@ -35,6 +33,7 @@ sealed class MailReward {
 
 @Serializable
 data class MailRecord(
+    @SerialName("id") val id: String? = null,
     var sender_uuid: String?,
     var sender_name: String,
     var recipient_uuid: String?,
@@ -42,7 +41,7 @@ data class MailRecord(
     var rewards: List<MailReward>?,
     var available: Boolean,
     var note: String
-): BaseRecord() {
+) {
     fun checkUuid() {
 
         if (recipient_uuid.isNullOrEmpty() || recipient_uuid == "null") {
@@ -70,35 +69,49 @@ data class MailRecord(
         }
     }
 
-    fun redeem(player: Player): Boolean {
+    fun redeem(player: Player) {
         if (!available) {
-            player.sendMessage("You have already collected this mail")
-            return false
+            player.sendMessage(Component.text("You have already collected this mail", NamedTextColor.RED))
+            return
         }
         available = false
         val id = this.id!!
-        val data = Json.encodeToString(serializer(), this)
-        Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), PBRunnable {
-            SneakyPocketbase.getInstance().pb().records.update<MailRecord>("lom2_mail", id, data)
-        })
-        if (rewards == null) {
-            player.sendMessage(Component.text("This mail has no rewards", NamedTextColor.RED))
-            return false
-        }
-        for (reward in rewards ?: emptyList()) {
-            when (reward) {
-                is MailReward.ItemReward -> {
-                    player.sendMessage(Component.text("Item rewards are not implemented yet", NamedTextColor.RED))
-                    return false
-                }
-                is MailReward.CommandReward -> {
-                    val command = reward.command.replace("{player}", player.name)
-                    SneakyMail.getInstance().logger.info("Redeeming ${player.name}'s mail $id with command: $command")
-                    Bukkit.getServer().dispatchCommand(Bukkit.getConsoleSender(), command)
-                }
+        val data = PocketbaseJson.encodeUpdate(this)
+        Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), Runnable {
+            val updatedRecord = try {
+                Json { ignoreUnknownKeys = true }.decodeFromString<MailRecord>(
+                    PocketbaseProvider.getApi().update("lom2_mail", id, data).join()
+                )
+            } catch (e: Exception) {
+                SneakyMail.getInstance().logger.warning("Failed to update mail record $id: ${e.message}")
+                Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
+                    available = true
+                    player.sendMessage(Component.text("An error occurred while redeeming this mail. Please tell Dani", NamedTextColor.RED))
+                })
+                return@Runnable
             }
-        }
-        return true
+            rewards = updatedRecord.rewards
+
+            Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
+                if (rewards == null) {
+                    player.sendMessage(Component.text("This mail has no rewards", NamedTextColor.RED))
+                    return@Runnable
+                }
+                for (reward in rewards ?: emptyList()) when (reward) {
+                    is MailReward.ItemReward ->
+                        player.sendMessage(Component.text("Item rewards are not implemented yet", NamedTextColor.RED))
+                    is MailReward.CommandReward -> {
+                        val command = reward.command.replace("{player}", player.name)
+                        SneakyMail.getInstance().logger.info("Redeeming ${player.name}'s mail $id with command: $command")
+                        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)
+                    }
+                }
+            })
+        })
+    }
+
+    fun validRecipient(): Boolean {
+        return recipient_uuid != null && recipient_uuid!!.isNotEmpty()
     }
 }
 
