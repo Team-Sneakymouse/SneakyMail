@@ -34,3 +34,6 @@ build
 # IDEs
 .vscode
 .idea
+
+# Local planning artifacts
+.scratch/

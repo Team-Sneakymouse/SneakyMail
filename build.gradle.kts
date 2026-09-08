@@ -20,6 +20,7 @@ repositories {
 dependencies {
 	implementation(kotlin("stdlib"))
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
+	testImplementation(kotlin("test"))
 	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
 	compileOnly(files("../SneakyPocketbase/build/libs/SneakyPocketbase-1.0-api.jar"))
@@ -61,4 +62,8 @@ val verifyPrivateKotlinRuntime by tasks.registering {
 
 tasks.check {
 	dependsOn(verifyPrivateKotlinRuntime)
+}
+
+tasks.test {
+	useJUnitPlatform()
 }

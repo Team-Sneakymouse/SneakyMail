@@ -3,7 +3,6 @@ package com.danidipp.sneakymail
 import me.clip.placeholderapi.expansion.PlaceholderExpansion
 import org.bukkit.entity.Player
 import org.jetbrains.annotations.NotNull
-import java.util.*
 
 class Placeholders : PlaceholderExpansion() {
     override fun getIdentifier(): @NotNull String {
@@ -26,8 +25,7 @@ class Placeholders : PlaceholderExpansion() {
         return when (identifier) {
             "unread_count" -> {
                 val mailCount = SneakyMail.mail.values.count {
-                    player.uniqueId == UUID.fromString(it.recipient_uuid)
-                    && it.available
+                    it.available && it.recipientUuidOrNull() == player.uniqueId
                 }
                 mailCount.toString()
             }

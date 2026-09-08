@@ -2,8 +2,6 @@
 package com.danidipp.sneakymail
 
 import com.danidipp.sneakypocketbase.PocketbaseProvider
-import kotlinx.serialization.EncodeDefault
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -13,7 +11,6 @@ import net.kyori.adventure.text.format.NamedTextColor
 import org.bukkit.Bukkit
 import org.bukkit.entity.Player
 import java.util.UUID
-import kotlin.reflect.typeOf
 
 @Serializable
 sealed class MailReward {
@@ -43,31 +40,29 @@ data class MailRecord(
     var note: String
 ) {
     fun checkUuid() {
+        val originalRecipientUuid = recipient_uuid
+        val resolvedRecipientUuid = resolveRecipientUuid(
+            originalRecipientUuid,
+            recipient_name
+        ) { name ->
+            Bukkit.getOfflinePlayerIfCached(name)?.uniqueId
+        }
 
-        if (recipient_uuid.isNullOrEmpty() || recipient_uuid == "null") {
-            if (recipient_name?.isNotEmpty() ?: false) {
-                val player = Bukkit.getOfflinePlayerIfCached(recipient_name!!)
-                recipient_uuid = player?.uniqueId?.toString()
-            }
-        }
-        if (recipient_uuid == null) {
-            SneakyMail.getInstance().logger.warning("Mail $id: recipient_uuid is null and player with name $recipient_name not found")
-            return
-        }
-        // add dashes if missing
-        if (recipient_uuid!!.matches("^[0-9a-fA-F]{32}$".toRegex())) {
-            recipient_uuid = recipient_uuid!!.replaceFirst(
-                "(.{8})(.{4})(.{4})(.{4})(.{12})".toRegex(),
-                "$1-$2-$3-$4-$5"
+        recipient_uuid = resolvedRecipientUuid?.toString()
+        if (resolvedRecipientUuid != null) return
+
+        if (originalRecipientUuid.isMissingRecipientUuid()) {
+            SneakyMail.getInstance().logger.warning(
+                "Mail $id: recipient_uuid is missing and player with name $recipient_name was not found"
             )
         } else {
-            try {
-                UUID.fromString(recipient_uuid)
-            } catch (e: IllegalArgumentException) {
-                SneakyMail.getInstance().logger.warning("Mail $id: failed to parse recipient_uuid $recipient_uuid (${if(recipient_uuid == null) "null" else "string"}): ${e.message}")
-            }
+            SneakyMail.getInstance().logger.warning(
+                "Mail $id: failed to parse recipient_uuid $originalRecipientUuid"
+            )
         }
     }
+
+    fun recipientUuidOrNull(): UUID? = recipientUuidOrNull(recipient_uuid)
 
     fun redeem(player: Player) {
         if (!available) {
@@ -110,8 +105,5 @@ data class MailRecord(
         })
     }
 
-    fun validRecipient(): Boolean {
-        return recipient_uuid != null && recipient_uuid!!.isNotEmpty()
-    }
 }
 

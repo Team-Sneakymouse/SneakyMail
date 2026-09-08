@@ -15,7 +15,6 @@ import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.InventoryHolder
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
-import java.util.UUID
 
 class MailGUI(private val player: Player) : InventoryHolder {
     private val inventory: Inventory
@@ -33,7 +32,8 @@ class MailGUI(private val player: Player) : InventoryHolder {
 
         for (mail in SneakyMail.mail) {
             if(!mail.value.available) continue
-            if (player.uniqueId != UUID.fromString(mail.value.recipient_uuid)) continue
+            val recipientUuid = mail.value.recipientUuidOrNull() ?: continue
+            if (player.uniqueId != recipientUuid) continue
             val item = ItemStack(Material.RABBIT_FOOT)
             val meta = item.itemMeta
             val sender = mail.value.sender_name.ifEmpty { "Unknown" }
