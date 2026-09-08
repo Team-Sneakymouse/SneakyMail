@@ -10,7 +10,7 @@ class MailCommand : Command("mail") {
     override fun tabComplete(sender: CommandSender, alias: String, args: Array<out String>): MutableList<String> {
         return mutableListOf()
     }
-    override fun execute(sender: CommandSender, commandLabel: String, args: Array<out String>?): Boolean {
+    override fun execute(sender: CommandSender, commandLabel: String, args: Array<out String>): Boolean {
         if (!SneakyMail.getInstance().isEnabled) {
             sender.sendMessage(Component.text("Plugin is disabled", NamedTextColor.RED))
             return true

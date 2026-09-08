@@ -25,7 +25,9 @@ class MailGUI(private val player: Player) : InventoryHolder {
         val bgItem = ItemStack(Material.JIGSAW)
         val bgMeta = bgItem.itemMeta
         bgMeta.isHideTooltip = true
-        bgMeta.setCustomModelData(3024)
+        val bgModelData = bgMeta.customModelDataComponent
+        bgModelData.floats = listOf(3024f)
+        bgMeta.setCustomModelDataComponent(bgModelData)
         bgItem.itemMeta = bgMeta
         inventory.setItem(inventory.size - 1, bgItem)
 
@@ -43,7 +45,9 @@ class MailGUI(private val player: Player) : InventoryHolder {
                     .colorIfAbsent(NamedTextColor.GRAY)
                     .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE)
             })
-            meta.setCustomModelData(75)
+            val modelData = meta.customModelDataComponent
+            modelData.floats = listOf(75f)
+            meta.setCustomModelDataComponent(modelData)
             val data = meta.persistentDataContainer
             data.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, mail.key)
 
@@ -78,14 +82,8 @@ class MailGUI(private val player: Player) : InventoryHolder {
                 val mailId = data.get(SneakyMail.getInstance().mailKey, PersistentDataType.STRING) ?: return
                 val mail = SneakyMail.mail[mailId] ?: return
 
-                val result = mail.redeem(event.whoClicked as Player)
-                if (result) {
-                    event.whoClicked.sendMessage("Mail redeemed")
-                    event.whoClicked.closeInventory()
-                } else {
-                    event.whoClicked.sendMessage("Something went wrong, please tell Dani")
-                    event.whoClicked.closeInventory()
-                }
+                mail.redeem(event.whoClicked as Player)
+                event.inventory.close()
             }
 
             @EventHandler

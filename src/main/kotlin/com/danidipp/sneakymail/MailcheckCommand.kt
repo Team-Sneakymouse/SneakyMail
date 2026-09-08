@@ -9,12 +9,12 @@ class MailcheckCommand : Command("mailcheck") {
     override fun tabComplete(sender: CommandSender, alias: String, args: Array<out String>): MutableList<String> {
         return mutableListOf()
     }
-    override fun execute(sender: CommandSender, commandLabel: String, args: Array<out String>?): Boolean {
+    override fun execute(sender: CommandSender, commandLabel: String, args: Array<out String>): Boolean {
         if (!SneakyMail.getInstance().isEnabled) {
             sender.sendMessage(Component.text("Plugin is disabled", NamedTextColor.RED))
             return true
         }
-        val id = args?.getOrNull(0)
+        val id = args.getOrNull(0)
         if (id != null){
             val mail = SneakyMail.mail[id]
             sender.sendMessage(mail.toString())

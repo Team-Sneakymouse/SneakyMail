@@ -1,6 +1,6 @@
 plugins {
-	kotlin("jvm") version "2.2.21"
-	kotlin("plugin.serialization") version "2.2.21"
+	kotlin("jvm") version "2.3.21"
+	kotlin("plugin.serialization") version "2.3.21"
 }
 
 repositories {
@@ -18,9 +18,9 @@ repositories {
 }
 
 dependencies {
-	implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.21")
+	implementation(kotlin("stdlib"))
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
-    compileOnly("io.papermc.paper:paper-api:1.20.6-R0.1-SNAPSHOT")
+	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
 	compileOnly(files("../SneakyPocketbase/build/libs/SneakyPocketbase-1.0-api.jar"))
 }
@@ -34,6 +34,7 @@ tasks.jar {
 }
 
 configure<JavaPluginExtension> {
+	toolchain.languageVersion.set(JavaLanguageVersion.of(25))
 	sourceSets {
 		main {
 			java.srcDir("src/main/kotlin")
