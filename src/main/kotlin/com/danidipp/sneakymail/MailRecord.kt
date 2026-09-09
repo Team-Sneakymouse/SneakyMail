@@ -82,6 +82,7 @@ data class MailRecord(
                 Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
                     available = true
                     player.sendMessage(Component.text("An error occurred while redeeming this mail. Please tell Dani", NamedTextColor.RED))
+                    player.closeInventory()
                 })
                 return@Runnable
             }

@@ -28,8 +28,9 @@ class MailGUI(private val player: Player) : InventoryHolder {
         bgModelData.floats = listOf(3024f)
         bgMeta.setCustomModelDataComponent(bgModelData)
         bgItem.itemMeta = bgMeta
-        inventory.setItem(inventory.size - 1, bgItem)
+        inventory.setItem(0, bgItem)
 
+        val mailItems = mutableListOf<ItemStack>()
         for (mail in SneakyMail.mail) {
             if(!mail.value.available) continue
             val recipientUuid = mail.value.recipientUuidOrNull() ?: continue
@@ -52,11 +53,12 @@ class MailGUI(private val player: Player) : InventoryHolder {
             data.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, mail.key)
 
             item.itemMeta = meta
-            val overflow = inventory.addItem(item)
-            if(overflow.isNotEmpty()) {
-                break
-            }
+            mailItems += item
         }
+
+        (1 until inventory.size).shuffled()
+            .zip(mailItems)
+            .forEach { (slot, item) -> inventory.setItem(slot, item) }
     }
 
     override fun getInventory(): Inventory {
@@ -82,8 +84,12 @@ class MailGUI(private val player: Player) : InventoryHolder {
                 val mailId = data.get(SneakyMail.getInstance().mailKey, PersistentDataType.STRING) ?: return
                 val mail = SneakyMail.mail[mailId] ?: return
 
+                val slot = event.rawSlot
+                val inventory = event.inventory
+                if (slot in 0 until inventory.size) {
+                    inventory.setItem(slot, null)
+                }
                 mail.redeem(event.whoClicked as Player)
-                event.inventory.close()
             }
 
             @EventHandler
