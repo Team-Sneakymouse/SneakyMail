@@ -60,23 +60,12 @@ class PocketbaseListener(private val logger: Logger, pocketbase: PocketbaseApi) 
                     return
                 }
 
-                val oldRecord = SneakyMail.mail[mailRecord.id]!!
-                if (!oldRecord.available && mailRecord.available) {
-                    // Mail has been marked as available again
-                    oldRecord.apply {
-                        sender_uuid = mailRecord.sender_uuid
-                        sender_name = mailRecord.sender_name
-                        recipient_uuid = mailRecord.recipient_uuid
-                        recipient_name = mailRecord.recipient_name
-                        rewards = mailRecord.rewards
-                        note = mailRecord.note
-                    }
+                val availableRecord = updateCachedMail(SneakyMail.mail, mailRecord)
+                if (availableRecord != null) {
                     Bukkit.getScheduler().runTask(SneakyMail.getInstance(), Runnable {
-                        val mailEvent = NewMailEvent(oldRecord)
+                        val mailEvent = NewMailEvent(availableRecord)
                         Bukkit.getPluginManager().callEvent(mailEvent)
                     })
-                } else {
-                    SneakyMail.mail[mailRecord.id!!] = mailRecord
                 }
             }
             AsyncPocketbaseEvent.Action.DELETE -> { //TODO: Properly handle deletion
