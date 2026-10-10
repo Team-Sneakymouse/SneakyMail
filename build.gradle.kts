@@ -1,7 +1,24 @@
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+
 plugins {
 	kotlin("jvm") version "2.3.21"
 	kotlin("plugin.serialization") version "2.3.21"
+	`maven-publish`
 }
+
+group = "io.github.team-sneakymouse"
+
+version = providers.exec {
+	workingDir(rootDir)
+	commandLine("git", "show", "-s", "--format=%ct:%h", "--abbrev=12", "HEAD")
+}.standardOutput.asText.map { commit ->
+	val (timestamp, hash) = commit.trim().split(":", limit = 2)
+	val date = DateTimeFormatter.ofPattern("yyyy.MM.dd").withZone(ZoneOffset.UTC)
+		.format(Instant.ofEpochSecond(timestamp.toLong()))
+	"$date-$hash"
+}.get()
 
 repositories {
 	maven {
@@ -26,7 +43,15 @@ dependencies {
 	compileOnly(files("../SneakyPocketbase/build/libs/SneakyPocketbase-1.0-api.jar"))
 }
 
+tasks.processResources {
+	inputs.property("version", project.version.toString())
+	filesMatching("paper-plugin.yml") {
+		expand("version" to project.version.toString())
+	}
+}
+
 tasks.jar {
+	archiveBaseName.set(rootProject.name)
 	manifest {
 		attributes["Main-Class"] = "com.danidipp.sneakymail"
 	}
@@ -42,7 +67,9 @@ configure<JavaPluginExtension> {
 			resources.srcDir(file("src/resources"))
 		}
 	}
+	withSourcesJar()
 }
+
 val verifyPrivateKotlinRuntime by tasks.registering {
 	dependsOn(tasks.jar)
 	doLast {
@@ -66,4 +93,36 @@ tasks.check {
 
 tasks.test {
 	useJUnitPlatform()
+}
+
+publishing {
+	publications {
+		create<MavenPublication>("maven") {
+			artifactId = rootProject.name
+			from(components["java"])
+			pom {
+				name.set("SneakyMail")
+				description.set("Paper plugin for sending and receiving mail and items")
+				url.set("https://github.com/Team-Sneakymouse/SneakyMail")
+				scm {
+					url.set("https://github.com/Team-Sneakymouse/SneakyMail")
+					connection.set("scm:git:https://github.com/Team-Sneakymouse/SneakyMail.git")
+				}
+			}
+		}
+	}
+	repositories {
+		maven {
+			name = "sneakyrp"
+			url = uri("https://maven.sneakyrp.com/releases")
+			credentials(PasswordCredentials::class)
+			authentication {
+				create<org.gradle.authentication.http.BasicAuthentication>("basic")
+			}
+		}
+	}
+}
+
+tasks.withType<PublishToMavenRepository>().configureEach {
+	dependsOn(tasks.check)
 }

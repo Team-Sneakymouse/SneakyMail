@@ -1,5 +1,5 @@
 name: SneakyMail
-version: "1.0"
+version: "${version}"
 main: com.danidipp.sneakymail.SneakyMail
 api-version: "26.2"
 authors:
