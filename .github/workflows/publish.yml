@@ -28,14 +28,6 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build SneakyPocketbase API (compileOnly sibling)
-        run: |
-          git clone --depth 1 https://github.com/Team-Sneakymouse/SneakyPocketbase.git ../SneakyPocketbase
-          chmod +x ../SneakyPocketbase/gradlew
-          ../SneakyPocketbase/gradlew -p ../SneakyPocketbase apiJar --no-daemon --console=plain
-          api_jar="$(ls ../SneakyPocketbase/build/libs/*-api.jar | head -1)"
-          cp "$api_jar" ../SneakyPocketbase/build/libs/SneakyPocketbase-1.0-api.jar
-
       - name: Build and check
         run: ./gradlew build --no-daemon --console=plain
 

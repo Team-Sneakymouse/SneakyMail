@@ -32,6 +32,7 @@ repositories {
 		url = uri("https://repo.extendedclip.com/content/repositories/placeholderapi/")
 	}
 	mavenCentral()
+	maven("https://maven.sneakyrp.com/releases")
 }
 
 dependencies {
@@ -40,7 +41,7 @@ dependencies {
 	testImplementation(kotlin("test"))
 	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
-	compileOnly(files("../SneakyPocketbase/build/libs/SneakyPocketbase-1.0-api.jar"))
+	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.09-70effb404392")
 }
 
 tasks.processResources {
