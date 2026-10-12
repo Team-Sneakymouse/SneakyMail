@@ -105,6 +105,7 @@ publishing {
 				name.set("SneakyMail")
 				description.set("Paper plugin for sending and receiving mail and items")
 				url.set("https://github.com/Team-Sneakymouse/SneakyMail")
+				properties.put("sneakyrp.deployment.type", "paper-plugin")
 				scm {
 					url.set("https://github.com/Team-Sneakymouse/SneakyMail")
 					connection.set("scm:git:https://github.com/Team-Sneakymouse/SneakyMail.git")
