@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class SneakyMail : JavaPlugin() {
     val mailKey = NamespacedKey(this, "mail")
+    private var mailRuntime: MailRuntime? = null
     lateinit var mailSender: MailSender
 
     override fun onLoad() {
@@ -18,6 +19,7 @@ class SneakyMail : JavaPlugin() {
     override fun onEnable() {
         val pocketbase = PocketbaseProvider.getApi()
         mailSender = MailSender(logger, pocketbase)
+        mailRuntime = MailRuntime(com.sneakydb.SneakyDBProvider.getApi(), pocketbase, logger)
 
         Bukkit.getServer().commandMap.registerAll(IDENTIFIER, listOf(
             MailCommand(),
@@ -35,6 +37,8 @@ class SneakyMail : JavaPlugin() {
     }
 
     override fun onDisable() {
+        mailRuntime?.close()
+        mailRuntime = null
         logger.warning("Disabling SneakyMail")
 
         // Close open GUIs

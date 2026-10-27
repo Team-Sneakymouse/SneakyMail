@@ -7,6 +7,10 @@ authors:
 description: "Paper plugin for sending and receiving mail and items"
 dependencies:
   server:
+    SneakyDB:
+      load: BEFORE
+      required: true
+      join-classpath: true
     SneakyPocketbase:
       load: BEFORE
       required: true
