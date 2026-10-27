@@ -166,6 +166,12 @@ val verifyPublicApiArtifact by tasks.registering {
  }
 }
 
+// The existing release workflow invokes the runtime publication by name.
+// Publish the matching skinny API first without changing runners or workflow trust.
+tasks.named("publishMavenPublicationToSneakyrpRepository") {
+ dependsOn("publishApiPublicationToSneakyrpRepository")
+}
+
 tasks.withType<PublishToMavenRepository>().configureEach {
 	dependsOn(tasks.check)
 }
