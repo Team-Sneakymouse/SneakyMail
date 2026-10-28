@@ -12,16 +12,13 @@ class MailRuntime(database: SneakyDBApi, pocketbase: PocketbaseApi, logger: Logg
  private val service = DurableMailService(database)
  private val worker = MailDeliveryWorker(database, pocketbase)
  private val executor = Executors.newSingleThreadScheduledExecutor { runnable -> Thread(runnable, "SneakyMail-delivery").apply { isDaemon = true } }
- @Volatile private var lastWarning = 0L
+ private val diagnostics = DeliveryDiagnostics(logger, java.util.function.LongSupplier(System::nanoTime))
  init {
   try {
    SneakyMailProvider.install(service)
    executor.scheduleWithFixedDelay({
-    worker.pump().whenComplete { _, error ->
-     if (error != null && System.nanoTime() - lastWarning > TimeUnit.MINUTES.toNanos(1)) {
-      lastWarning = System.nanoTime()
-      logger.warning("Mail delivery pending; journal retained for GET-only recovery (${error.javaClass.simpleName})")
-     }
+    worker.pumpBatch().whenComplete { _, error ->
+     if (error != null) diagnostics.report(error)
     }
    }, 0, 1, TimeUnit.SECONDS)
   } catch (error: Exception) { close(); throw error }

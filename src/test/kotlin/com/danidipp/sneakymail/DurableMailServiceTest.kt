@@ -6,6 +6,17 @@ import java.util.concurrent.CompletableFuture
 import kotlin.test.*
 
 class DurableMailServiceTest {
+ @Test fun `Java null in each argument returns failed future without throwing`() {
+  val db = Database(); val service = DurableMailService(db)
+  val method = service.javaClass.getMethod("submitCommandMail", String::class.java, UUID::class.java, String::class.java, String::class.java, String::class.java)
+  for (index in 0..4) {
+   val args = arrayOf<Any?>("key", UUID.randomUUID(), "sender", "note", "command"); args[index] = null
+   val result = method.invoke(service, *args) as CompletableFuture<*>
+   assertTrue(result.isCompletedExceptionally, "argument $index")
+  }
+  assertEquals("", db.sql); service.close()
+ }
+
  class Database : SneakyDBApi {
   val result = CompletableFuture<List<Map<String, Any?>>>()
   var sql = ""

@@ -15,7 +15,9 @@ class DurableMailService(private val database: SneakyDBApi) : SneakyMailApi, Aut
  @Volatile private var open = true
  private val pending = ConcurrentHashMap.newKeySet<CompletableFuture<MailAcceptance>>()
  override fun isAvailable() = open && database.isAvailable()
- override fun submitCommandMail(sourceKey: String, recipientUuid: UUID, senderName: String, note: String, command: String): CompletableFuture<MailAcceptance> {
+ override fun submitCommandMail(sourceKey: String?, recipientUuid: UUID?, senderName: String?, note: String?, command: String?): CompletableFuture<MailAcceptance> {
+  if (sourceKey == null || recipientUuid == null || senderName == null || note == null || command == null)
+   return CompletableFuture.failedFuture(IllegalArgumentException("Mail arguments must not be null"))
   val result = CompletableFuture<MailAcceptance>()
   synchronized(this) {
    if (!isAvailable()) return CompletableFuture.failedFuture(IllegalStateException("SneakyMail unavailable"))

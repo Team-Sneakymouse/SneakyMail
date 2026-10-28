@@ -4,9 +4,10 @@ import java.util.Objects;
 public final class SneakyMailProvider {
  private static volatile SneakyMailApi api;
  private SneakyMailProvider() {}
+ /** Returns the installed service even while unavailable; only absence/uninstallation throws. */
  public static SneakyMailApi getApi() {
   SneakyMailApi current = api;
-  if (current == null || !current.isAvailable()) throw new IllegalStateException("SneakyMail unavailable");
+  if (current == null) throw new IllegalStateException("SneakyMail unavailable");
   return current;
  }
  /** Runtime lifecycle seam; rejects replacing another active owner. */

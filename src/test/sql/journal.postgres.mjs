@@ -37,6 +37,8 @@ try {
  const submit = sql('DurableMailService', 'SUBMIT');
  const claim = sql('MailDeliveryWorker', 'CLAIM');
  const confirm = sql('MailDeliveryWorker', 'CONFIRM');
+ const mark = sql('MailDeliveryWorker', 'MARK');
+ const reset = sql('MailDeliveryWorker', 'RESET');
  const payload = JSON.stringify({ recipient_uuid: '00000000-0000-0000-0000-000000000001', sender_name: 'Phone', note: 'note', command: 'reward' });
  const duplicates = await Promise.all([
   a.query(submit, ['one', 'abc123abc123abc', payload]),
@@ -54,15 +56,34 @@ try {
  await a.query('COMMIT');
  assert.equal((await b.query(claim, ['owner-b'])).rows.length, 0);
  console.log('PASS: SKIP LOCKED skips an uncommitted claim; committed lease prevents another send owner');
+ assert.equal((await a.query(mark, ['attempt-a', id, 'owner-a'])).rowCount, 1);
  await admin.query("UPDATE sneakymail.command_requests SET lease_until=now()-interval '1 second'");
  const recovered = (await b.query(claim, ['owner-b'])).rows[0];
  assert.equal(recovered.was_attempted, true);
  assert.equal(recovered.request_id, id);
+ assert.equal((await a.query(reset, [id, 'stale-attempt'])).rowCount, 0);
+ // This is a known-unsent simulation: the old marker may be reset after lease change.
+ assert.equal((await a.query(reset, [id, 'attempt-a'])).rowCount, 1);
+ await admin.query("UPDATE sneakymail.command_requests SET next_attempt_at=now()-interval '1 second'");
+ assert.equal((await b.query(mark, ['attempt-b', id, 'owner-b'])).rowCount, 1);
+ assert.equal((await a.query(reset, [id, 'attempt-a'])).rowCount, 0);
  assert.equal((await a.query(confirm, [id, 'owner-a'])).rowCount, 0);
  assert.equal((await b.query(confirm, [id, 'owner-b'])).rowCount, 1);
  assert.equal((await a.query(submit, ['one', 'jkl123jkl123jkl', payload])).rows[0].request_id, id);
  assert.equal((await a.query(claim, ['owner-c'])).rows.length, 0);
  console.log('PASS: recovery keeps ID and is GET-only; old owner cannot confirm; receipt survives resubmission');
+ assert.equal((await a.query(reset, [id, 'attempt-b'])).rowCount, 0);
+ for (const set of ["payload='{}'::jsonb", "source_key='changed'", "request_id='xxx123xxx123xxx'", 'confirmed_at=NULL'])
+  await assert.rejects(admin.query(`UPDATE sneakymail.command_requests SET ${set} WHERE request_id=$1`, [id]));
+ console.log('PASS: attempt identity fences compensation across lease change and permanent receipt cannot reset');
+ await admin.query(`INSERT INTO sneakymail.command_requests(source_key,request_id,payload)
+  SELECT 'plan:'||i,lpad(i::text,15,'0'),'{}'::jsonb FROM generate_series(1,10000) i`);
+ await admin.query('ANALYZE sneakymail.command_requests');
+ const plan = JSON.stringify((await admin.query('EXPLAIN (FORMAT JSON) ' + claim, ['plan'])).rows);
+ assert.ok(plan.includes('command_requests_pending'));
+ assert.ok(![...plan.matchAll(/Node Type[^A-Za-z]+([A-Za-z ]+)/g)].some(x => x[1].includes('Sort')), plan);
+ console.log('PASS: real PostgreSQL production claim uses ordered pending index without Sort');
+ console.log('5 PostgreSQL tests passed; 0 skipped');
  console.log((await admin.query('SELECT version()')).rows[0].version);
 } finally {
  for (const c of clients) { await c.query('ROLLBACK').catch(() => {}); await c.end(); }

@@ -43,10 +43,10 @@ dependencies {
 	testImplementation(kotlin("test"))
 	compileOnly("io.github.team-sneakymouse:sneakydb-api:2026.10.24-4a58c0cac70a")
 	testImplementation("io.github.team-sneakymouse:sneakydb-api:2026.10.24-4a58c0cac70a")
-	testImplementation("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.09-70effb404392")
+	testImplementation("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
 	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
-	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.09-70effb404392")
+	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
 }
 
 tasks.processResources {

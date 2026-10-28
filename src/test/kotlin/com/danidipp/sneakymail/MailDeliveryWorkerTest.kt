@@ -7,13 +7,53 @@ import java.util.concurrent.CompletableFuture
 import kotlin.test.*
 
 class MailDeliveryWorkerTest {
+ @Test fun `claim timeout never completes manager future and late claim cannot dispatch`() {
+  val db = Db(); db.delayed = CompletableFuture(); var creates = 0
+  val pb = Proxy.newProxyInstance(PocketbaseApi::class.java.classLoader, arrayOf(PocketbaseApi::class.java)) { _, m, _ -> when(m.name) {
+   "getLifecycleSnapshot" -> PocketbaseLifecycleSnapshot(PocketbaseLifecycleSnapshot.ApiState.AVAILABLE, PocketbaseLifecycleSnapshot.TransportState.CONNECTED, emptyMap(), 1, 1, "")
+   "create" -> { creates++; CompletableFuture.completedFuture("{}") }
+   else -> error(m.name)
+  } } as PocketbaseApi
+  val worker = MailDeliveryWorker(db, pb); val pending = worker.pump()
+  assertFails { pending.get(17, java.util.concurrent.TimeUnit.SECONDS) }
+  assertFalse(db.delayed!!.isDone, "Manager future must be untouched")
+  db.delayed!!.complete(listOf(db.claimed)); assertEquals(0, creates); assertTrue(db.writes.isEmpty()); worker.close()
+ }
+
+ @Test fun `late mark after shutdown is compensated without dispatch`() {
+  val db = Db(); db.delayedMark = CompletableFuture(); var creates = 0
+  val pb = Proxy.newProxyInstance(PocketbaseApi::class.java.classLoader, arrayOf(PocketbaseApi::class.java)) { _, m, _ -> when(m.name) {
+   "getLifecycleSnapshot" -> PocketbaseLifecycleSnapshot(PocketbaseLifecycleSnapshot.ApiState.AVAILABLE, PocketbaseLifecycleSnapshot.TransportState.CONNECTED, emptyMap(), 1, 1, "")
+   "create" -> { creates++; CompletableFuture.completedFuture("""{"id":"abc123abc123abc"}""") }
+   else -> error(m.name)
+  } } as PocketbaseApi
+  val worker = MailDeliveryWorker(db, pb); val pending = worker.pump(); worker.close()
+  db.delayedMark!!.complete(1); pending.handle { _, _ -> null }.join()
+  assertEquals(0, creates); assertTrue(db.writes.any { it.contains("attempted_at = NULL") })
+ }
+
+ @Test fun `claim leases without marking any possible send`() {
+  val setClause = MailDeliveryWorker.CLAIM.substringAfter(") UPDATE").substringBefore("FROM candidate")
+  assertFalse(setClause.contains("attempted_at ="), "A lease must not imply a POST")
+ }
+ @Test fun `send marker is committed after payload preparation before create`() {
+  val db = Db(); var creates = 0
+  val pb = Proxy.newProxyInstance(PocketbaseApi::class.java.classLoader, arrayOf(PocketbaseApi::class.java)) { _, m, _ -> when(m.name) {
+   "getLifecycleSnapshot" -> PocketbaseLifecycleSnapshot(PocketbaseLifecycleSnapshot.ApiState.AVAILABLE, PocketbaseLifecycleSnapshot.TransportState.CONNECTED, emptyMap(), 1, 1, "")
+   "create" -> { assertTrue(db.writes.any { it.contains("attempted_at = now()") }); creates++; CompletableFuture.completedFuture("""{"id":"abc123abc123abc"}""") }
+   else -> error(m.name)
+  } } as PocketbaseApi
+  MailDeliveryWorker(db, pb).use { it.pump().join() }; assertEquals(1, creates)
+ }
+
  class Db : SneakyDBApi {
   var claimed: Map<String, Any?> = mapOf("request_id" to "abc123abc123abc", "was_attempted" to false, "payload" to """{"recipient_uuid":"00000000-0000-0000-0000-000000000001","sender_name":"Phone","note":"note","command":"reward"}""")
   val writes = mutableListOf<String>()
+  var delayedMark: CompletableFuture<Int>? = null
   override fun isAvailable() = true
   var delayed: CompletableFuture<List<Map<String, Any?>>>? = null
   override fun query(sql: String, parameters: List<*>) = delayed ?: CompletableFuture.completedFuture(listOf(claimed))
-  override fun execute(sql: String, parameters: List<*>): CompletableFuture<Int> { writes.add(sql); return CompletableFuture.completedFuture(1) }
+  override fun execute(sql: String, parameters: List<*>): CompletableFuture<Int> { writes.add(sql); return if (sql.contains("attempted_at = now()")) delayedMark ?: CompletableFuture.completedFuture(1) else CompletableFuture.completedFuture(1) }
  }
  @Test fun `shutdown and manager reload fence late claim callbacks`() {
   for (shutdown in listOf(true, false)) {
@@ -78,7 +118,7 @@ class MailDeliveryWorkerTest {
   val worker = type.getConstructor(SneakyDBApi::class.java, PocketbaseApi::class.java).newInstance(db, pb)
   (type.getMethod("pump").invoke(worker) as CompletableFuture<*>).join()
   assertEquals(1, creates)
-  assertTrue(db.writes.single().contains("confirmed_at"))
+  assertTrue(db.writes.last().contains("confirmed_at"))
   (worker as AutoCloseable).close()
  }
 }
