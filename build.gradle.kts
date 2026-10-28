@@ -1,3 +1,4 @@
+import java.util.zip.ZipFile
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -21,6 +22,7 @@ version = providers.exec {
 }.get()
 
 repositories {
+	mavenCentral()
 	maven {
 		url = uri("https://plugins.gradle.org/m2/")
 	}
@@ -39,9 +41,12 @@ dependencies {
 	implementation(kotlin("stdlib"))
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 	testImplementation(kotlin("test"))
+	compileOnly("io.github.team-sneakymouse:sneakydb-api:2026.10.24-4a58c0cac70a")
+	testImplementation("io.github.team-sneakymouse:sneakydb-api:2026.10.24-4a58c0cac70a")
+	testImplementation("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
 	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
-	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.09-70effb404392")
+	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
 }
 
 tasks.processResources {
@@ -90,10 +95,26 @@ val verifyPrivateKotlinRuntime by tasks.registering {
 
 tasks.check {
 	dependsOn(verifyPrivateKotlinRuntime)
+	dependsOn("verifyPublicApiArtifact")
 }
 
 tasks.test {
 	useJUnitPlatform()
+}
+
+val apiJar by tasks.registering(Jar::class) {
+ dependsOn(tasks.classes)
+ archiveBaseName.set("sneakymail-api")
+ from(sourceSets.main.get().output) { include("com/danidipp/sneakymail/api/**") }
+}
+
+publishing.publications.create<MavenPublication>("api") {
+ artifactId = "sneakymail-api"
+ artifact(apiJar)
+ pom {
+  name.set("SneakyMail API")
+  description.set("JDK-only durable mail admission contract; compileOnly, never shade")
+ }
 }
 
 publishing {
@@ -123,6 +144,32 @@ publishing {
 			}
 		}
 	}
+}
+
+val verifyPublicApiArtifact by tasks.registering {
+ dependsOn(apiJar, tasks.jar, "generatePomFileForApiPublication")
+ doLast {
+  val expected = setOf("SneakyMailApi", "MailAcceptance", "SneakyMailProvider")
+    .map { "com/danidipp/sneakymail/api/$it.class" }.toSet()
+  ZipFile(apiJar.get().archiveFile.get().asFile).use { zip ->
+   val classes = zip.entries().asSequence().map { it.name }.filter { it.endsWith(".class") }.toSet()
+   check(classes == expected) { "API JAR contains implementation or missing contract: $classes" }
+  }
+  ZipFile(tasks.jar.get().archiveFile.get().asFile).use { zip ->
+   val entries = zip.entries().asSequence().map { it.name }.toList()
+   expected.forEach { check(entries.count { entry -> entry == it } == 1) }
+   check(entries.none { it.startsWith("com/sneakydb/") || it.startsWith("com/danidipp/sneakypocketbase/") })
+  }
+  val pom = layout.buildDirectory.file("publications/api/pom-default.xml").get().asFile.readText()
+  check("<artifactId>sneakymail-api</artifactId>" in pom)
+  check("<dependencies>" !in pom && "sneakyrp.deployment.type" !in pom)
+ }
+}
+
+// The existing release workflow invokes the runtime publication by name.
+// Publish the matching skinny API first without changing runners or workflow trust.
+tasks.named("publishMavenPublicationToSneakyrpRepository") {
+ dependsOn("publishApiPublicationToSneakyrpRepository")
 }
 
 tasks.withType<PublishToMavenRepository>().configureEach {
