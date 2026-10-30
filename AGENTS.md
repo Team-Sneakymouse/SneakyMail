@@ -1,11 +1,7 @@
-# Agent instructions (SneakyMail)
+# Agent instructions
 
-Paper plugin in Team-Sneakymouse / Lords of Minecraft. Follow the shared rules in EmptyPlugin's `AGENTS.md` and the team development policy.
+Resolve shared policy using `.team-policy/pointer.json` (paths relative to this repository). Clone the configured remote into the first candidate if missing; otherwise fetch and fast-forward the tracked branch when safe. Report blocked updates.
 
-## Repo-specific rules
+Before implementing, read the resolved checkout's `README.md` and follow its linked guidance relevant to the task.
 
-- Persistence runs on the `MailRuntime` executor through the manager APIs; listeners do not call PocketBase directly.
-- Delivery is fenced and idempotent (`MailDeliveryWorker`). Read `docs/durable-command-mail.md` and `docs/command-mail-journal.sql` before changing delivery.
-- `PocketbaseListener` callbacks are async; use `runTask` before any Bukkit call.
-- `PocketbaseListener` has an unhandled DELETE case (`//TODO: Properly handle deletion`); deleted mail should update open GUIs and counters.
-- Reward commands (`MailReward.CommandReward`) run as console with only `{player}` substituted; never put mail text or player-supplied text into a console command.
+When changing durable command-mail admission, delivery, or recovery, read `docs/durable-command-mail.md` and `docs/command-mail-journal.sql`.
