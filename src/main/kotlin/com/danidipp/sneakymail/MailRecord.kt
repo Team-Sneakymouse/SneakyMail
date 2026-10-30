@@ -97,6 +97,8 @@ data class MailRecord(
                     is MailReward.ItemReward ->
                         player.sendMessage(Component.text("Item rewards are not implemented yet", NamedTextColor.RED))
                     is MailReward.CommandReward -> {
+                        // Templates must come from trusted reward producers: they run with console privileges.
+                        // Mail notes and other player-supplied text are display data, not command input.
                         val command = reward.command.replace("{player}", player.name)
                         SneakyMail.getInstance().logger.info("Redeeming ${player.name}'s mail $id with command: $command")
                         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)
