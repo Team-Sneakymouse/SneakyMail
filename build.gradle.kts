@@ -47,6 +47,7 @@ dependencies {
 	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
 	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
+	compileOnly("io.github.team-sneakymouse:sneakyutils:2026.11.10-7e1262ebd376")
 }
 
 tasks.processResources {

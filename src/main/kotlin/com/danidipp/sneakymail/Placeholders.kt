@@ -2,14 +2,13 @@ package com.danidipp.sneakymail
 
 import me.clip.placeholderapi.expansion.PlaceholderExpansion
 import org.bukkit.entity.Player
-import org.jetbrains.annotations.NotNull
 
 class Placeholders : PlaceholderExpansion() {
-    override fun getIdentifier(): @NotNull String {
+    override fun getIdentifier(): String {
         return SneakyMail.IDENTIFIER
     }
 
-    override fun getAuthor(): @NotNull String {
+    override fun getAuthor(): String {
         return SneakyMail.AUTHORS
     }
 

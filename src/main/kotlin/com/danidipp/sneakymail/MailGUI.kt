@@ -1,5 +1,6 @@
 package com.danidipp.sneakymail
 
+import com.sneakyutils.util.DisplayOnlyInventoryHolder
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
 import net.kyori.adventure.text.format.TextDecoration
@@ -11,12 +12,12 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.inventory.InventoryClickEvent
 import org.bukkit.event.inventory.InventoryCloseEvent
+import org.bukkit.event.inventory.InventoryDragEvent
 import org.bukkit.inventory.Inventory
-import org.bukkit.inventory.InventoryHolder
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
 
-class MailGUI(private val player: Player) : InventoryHolder {
+class MailGUI(private val player: Player) : DisplayOnlyInventoryHolder {
     private val inventory: Inventory
     init {
         inventory = Bukkit.getServer().createInventory(this, 27, Component.text("Mail"))
@@ -90,6 +91,11 @@ class MailGUI(private val player: Player) : InventoryHolder {
                     inventory.setItem(slot, null)
                 }
                 mail.redeem(event.whoClicked as Player)
+            }
+
+            @EventHandler
+            fun onInventoryDrag(event: InventoryDragEvent) {
+                if (event.inventory.holder is MailGUI) event.isCancelled = true
             }
 
             @EventHandler
