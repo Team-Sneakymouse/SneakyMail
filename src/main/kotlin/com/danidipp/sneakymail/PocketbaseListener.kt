@@ -11,12 +11,12 @@ import java.util.logging.Logger
 
 class PocketbaseListener(private val logger: Logger, pocketbase: PocketbaseApi) : Listener {
     init {
-        logger.warning("Registering callback for when Pocketbase is loaded")
+        logger.fine("Registering callback for when Pocketbase is loaded")
         pocketbase.whenReady {
-            logger.warning("Pocketbase is loaded. Now subscribing to mail events")
+            logger.fine("Pocketbase is loaded. Now subscribing to mail events")
             pocketbase.subscribe("lom2_mail")
 
-            logger.warning("Fetching current mail records")
+            logger.fine("Fetching current mail records")
             Bukkit.getScheduler().runTaskAsynchronously(SneakyMail.getInstance(), Runnable {
 
                 val mailList = pocketbase.getFullList(
@@ -39,7 +39,7 @@ class PocketbaseListener(private val logger: Logger, pocketbase: PocketbaseApi) 
     @EventHandler
     fun onMailEvent(event: AsyncPocketbaseEvent) {
         if (event.collectionName != "lom2_mail") return
-        logger.warning("Received mail event: ${event.action}")
+        logger.fine("Received mail event: ${event.action}")
         val mailRecord = Json { ignoreUnknownKeys = true; coerceInputValues = true }
             .decodeFromString<MailRecord>(event.recordJson)
 
