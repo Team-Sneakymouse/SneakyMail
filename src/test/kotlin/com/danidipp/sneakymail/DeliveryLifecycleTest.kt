@@ -36,6 +36,8 @@ class DeliveryLifecycleTest {
    MailDeliveryWorker.CONFIRM -> if (receiptFailure) CompletableFuture.failedFuture(IllegalStateException("receipt unavailable")) else CompletableFuture.completedFuture(1).also { confirmed = true }
    else -> error(sql)
   }
+  override fun whenReady(): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
+  override fun migrate(plugin: String, anchor: Class<*>) = CompletableFuture.completedFuture(1)
   fun worker(timeout: Long = 1000, known: Boolean = false) = MailDeliveryWorker(this, pb, timeout, Predicate { known && it is IllegalArgumentException })
   fun commitMark() { attempted = true; markFuture!!.complete(1) }
   fun failed(future: CompletableFuture<*>) { assertFailsWith<ExecutionException> { future.get(2, TimeUnit.SECONDS) } }

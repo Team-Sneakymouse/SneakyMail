@@ -34,6 +34,7 @@ try {
  for (let i = 0; i < 3; i++) { const c = new Client(options); await c.connect(); clients.push(c); }
  const [admin, a, b] = clients;
  await admin.query(readFileSync('docs/command-mail-journal.sql', 'utf8'));
+ await admin.query(readFileSync('src/resources/db/migrations/V001__command_mail_journal.sql', 'utf8'));
  const submit = sql('DurableMailService', 'SUBMIT');
  const claim = sql('MailDeliveryWorker', 'CLAIM');
  const confirm = sql('MailDeliveryWorker', 'CONFIRM');

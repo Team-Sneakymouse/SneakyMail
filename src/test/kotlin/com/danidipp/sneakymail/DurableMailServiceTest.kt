@@ -21,11 +21,16 @@ class DurableMailServiceTest {
   val result = CompletableFuture<List<Map<String, Any?>>>()
   var sql = ""
   var parameters: List<*> = emptyList<Any>()
+  var migration = CompletableFuture.completedFuture(1)
   override fun isAvailable() = true
   override fun query(sql: String, parameters: List<*>): CompletableFuture<List<Map<String, Any?>>> {
    this.sql = sql; this.parameters = parameters; return result
   }
   override fun execute(sql: String, parameters: List<*>) = CompletableFuture.completedFuture(1)
+  override fun whenReady(): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
+  override fun migrate(plugin: String, anchor: Class<*>) = migration.also {
+   assertEquals("sneakymail", plugin)
+  }
  }
  @Test fun `payload conflict fails asynchronously`() {
   val db = Database(); val service = DurableMailService(db)

@@ -33,6 +33,8 @@ class BatchDrainTest {
     override fun isAvailable() = true
     override fun query(sql: String, parameters: List<*>) = CompletableFuture.completedFuture(if (claims++ < available) listOf(row) else emptyList())
     override fun execute(sql: String, parameters: List<*>) = CompletableFuture.completedFuture(1)
+    override fun whenReady(): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
+    override fun migrate(plugin: String, anchor: Class<*>) = CompletableFuture.completedFuture(1)
    }
    val pb = Proxy.newProxyInstance(PocketbaseApi::class.java.classLoader, arrayOf(PocketbaseApi::class.java)) { _, m, _ -> when(m.name) {
     "getLifecycleSnapshot" -> PocketbaseLifecycleSnapshot(PocketbaseLifecycleSnapshot.ApiState.AVAILABLE, PocketbaseLifecycleSnapshot.TransportState.CONNECTED, emptyMap(), 1, 1, "")

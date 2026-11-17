@@ -54,6 +54,8 @@ class MailDeliveryWorkerTest {
   var delayed: CompletableFuture<List<Map<String, Any?>>>? = null
   override fun query(sql: String, parameters: List<*>) = delayed ?: CompletableFuture.completedFuture(listOf(claimed))
   override fun execute(sql: String, parameters: List<*>): CompletableFuture<Int> { writes.add(sql); return if (sql.contains("attempted_at = now()")) delayedMark ?: CompletableFuture.completedFuture(1) else CompletableFuture.completedFuture(1) }
+  override fun whenReady(): CompletableFuture<Void> = CompletableFuture.completedFuture(null)
+  override fun migrate(plugin: String, anchor: Class<*>) = CompletableFuture.completedFuture(1)
  }
  @Test fun `shutdown and manager reload fence late claim callbacks`() {
   for (shutdown in listOf(true, false)) {

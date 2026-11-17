@@ -22,6 +22,7 @@ const payload = { recipient_uuid: '00000000-0000-0000-0000-000000000001', sender
 const insert = (key, id, value = payload) => db.query(submit, [key, id, JSON.stringify(value)]);
 try {
  await db.exec(fs.readFileSync('docs/command-mail-journal.sql', 'utf8'));
+ await db.exec(fs.readFileSync('src/resources/db/migrations/V001__command_mail_journal.sql', 'utf8'));
  await check('durable duplicate returns original stable ID after restart-equivalent resubmit', async () => {
   assert.equal((await insert('one', 'abc123abc123abc')).rows[0].request_id, 'abc123abc123abc');
   assert.equal((await insert('one', 'def123def123def')).rows[0].request_id, 'abc123abc123abc');

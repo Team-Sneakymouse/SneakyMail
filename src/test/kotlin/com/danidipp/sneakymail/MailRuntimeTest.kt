@@ -9,6 +9,18 @@ import java.util.logging.Logger
 import kotlin.test.*
 
 class MailRuntimeTest {
+ @Test fun `failed migrations keep durable provider uninstalled`() {
+  val db = DurableMailServiceTest.Database().apply { migration = CompletableFuture.failedFuture(IllegalStateException("no schema")) }
+  val pb = Proxy.newProxyInstance(PocketbaseApi::class.java.classLoader, arrayOf(PocketbaseApi::class.java)) { _, m, _ -> when(m.name) {
+   "getLifecycleSnapshot" -> PocketbaseLifecycleSnapshot(PocketbaseLifecycleSnapshot.ApiState.UNAVAILABLE, PocketbaseLifecycleSnapshot.TransportState.DISCONNECTED, emptyMap(), 1, 1, "")
+   else -> error(m.name)
+  } } as PocketbaseApi
+  val type = Class.forName("com.danidipp.sneakymail.MailRuntime")
+  val runtime = type.getConstructor(SneakyDBApi::class.java, PocketbaseApi::class.java, Logger::class.java).newInstance(db, pb, Logger.getAnonymousLogger()) as AutoCloseable
+  assertFailsWith<IllegalStateException> { SneakyMailProvider.getApi() }
+  runtime.close()
+ }
+
  @Test fun `runtime owns provider and stops outstanding acceptance`() {
   val db = DurableMailServiceTest.Database()
   val pb = Proxy.newProxyInstance(PocketbaseApi::class.java.classLoader, arrayOf(PocketbaseApi::class.java)) { _, m, _ -> when(m.name) {
