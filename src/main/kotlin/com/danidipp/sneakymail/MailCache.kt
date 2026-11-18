@@ -15,7 +15,7 @@ import java.util.logging.Logger
  * The database decides: every change notification reloads the recipient. Loads for one player never overlap (a reload
  * asked for while one runs follows it), so results apply in order. A mail that was claimed or deleted while a load was
  * running stays out of that load's result, which may have been read before the claim; the load after it, read after
- * the claim committed, decides again, so a mail that was given back (unclaimed) shows up again.
+ * the claim committed, decides again.
  */
 class MailCache(
     private val load: (UUID) -> CompletableFuture<List<MailRecord>>,
@@ -40,8 +40,6 @@ class MailCache(
         val announce = mutableSetOf<Long>()
         /** Ids claimed or deleted since the running load started: that load's result may still hold them. */
         val goneDuringLoad = mutableSetOf<Long>()
-        /** Ids whose claim is running. */
-        val claiming = mutableSetOf<Long>()
     }
 
     private val players = ConcurrentHashMap<UUID, Player>()
@@ -65,12 +63,6 @@ class MailCache(
         players.forEach { (player, state) -> requestLoad(player, state) }
     }
 
-    /** Reads [player]'s mail again, e.g. after an "unclaimed" notification. */
-    fun reload(player: UUID) {
-        val state = players[player] ?: return
-        requestLoad(player, state)
-    }
-
     /** A "new" notification: mail [id] was inserted for [recipient]. */
     fun created(id: Long, recipient: UUID) {
         val state = players[recipient] ?: return
@@ -90,19 +82,8 @@ class MailCache(
         requestLoad(recipient, state)
     }
 
-    /** False when a claim of [id] is already running (a double click). */
-    fun beginClaim(player: UUID, id: Long): Boolean = players[player]?.claiming?.add(id) ?: false
-
-    fun endClaim(player: UUID, id: Long) {
-        players[player]?.claiming?.remove(id)
-    }
-
-    /** [player]'s unclaimed mail, oldest first, without mail whose claim is running. */
-    fun unclaimed(player: UUID): List<MailRecord> {
-        val state = players[player] ?: return emptyList()
-        val claiming = state.claiming.toSet()
-        return state.mail.values.filter { it.id !in claiming }.sortedBy { it.id }
-    }
+    /** [player]'s unclaimed mail, oldest first. */
+    fun unclaimed(player: UUID): List<MailRecord> = players[player]?.mail?.values?.sortedBy { it.id } ?: emptyList()
 
     fun unreadCount(player: UUID): Int = players[player]?.mail?.size ?: 0
 

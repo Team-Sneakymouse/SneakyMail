@@ -42,9 +42,6 @@ class MailStore(private val db: SneakyDBApi, private val logger: Logger) {
     /** The claim statement of mail [id] hit its lock or statement timeout and was rolled back: nothing was claimed. */
     class ClaimTimedOut(val id: Long, cause: SQLException) : RuntimeException("Claim of mail $id timed out", cause)
 
-    /** Undoes a claim whose rewards were never handed out (the player left or the plugin stopped meanwhile). */
-    fun unclaim(id: Long, recipient: UUID): CompletableFuture<Int> = db.execute(UNCLAIM, listOf(id, recipient))
-
     /** `sneakymail.send`: the new mail's id, or the existing one for a [sourceKey] sent before with the same content. */
     fun send(sourceKey: String?, recipient: UUID, senderName: String, note: String, rewards: List<MailReward>): CompletableFuture<Long> =
         db.query(SEND, listOf(sourceKey, recipient, senderName, note, MailRewards.encode(rewards)))
@@ -83,9 +80,6 @@ class MailStore(private val db: SneakyDBApi, private val logger: Logger) {
 
         /** lock_not_available (lock_timeout) and query_canceled (statement_timeout). */
         val TIMEOUT_STATES = setOf("55P03", "57014")
-
-        const val UNCLAIM = "update sneakymail.mail set claimed_at = null where id = ? and recipient_uuid = ? " +
-            "and claimed_at is not null"
 
         const val SEND = "select sneakymail.send(?::text, ?::uuid, ?::text, ?::text, ?::jsonb) as id"
     }

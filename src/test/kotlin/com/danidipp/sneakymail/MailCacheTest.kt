@@ -140,22 +140,9 @@ class MailCacheTest {
     }
 
     @Test
-    fun `a mail given back after its claim shows up again`() {
-        cache.track(alice, announceUnread = false)
-        loads[0].second.complete(listOf(mail(1)))
+    fun `a notification for a player who is not online does nothing`() {
         cache.gone(1, alice)
-        loads[1].second.complete(emptyList())
-        assertEquals(emptyList(), ids())
-        cache.reload(alice) // the "unclaimed" notification
-        loads[2].second.complete(listOf(mail(1)))
-        assertEquals(listOf(1L), ids())
-        assertTrue(newMail.isEmpty(), "a returned mail is not announced as new")
-    }
-
-    @Test
-    fun `reload of a player who is not online does nothing`() {
-        cache.reload(alice)
-        cache.gone(1, alice)
+        cache.created(1, alice)
         assertTrue(loads.isEmpty())
     }
 
@@ -193,19 +180,6 @@ class MailCacheTest {
         throwing.track(alice, announceUnread = true)
         assertEquals(0, throwing.unreadCount(alice))
         assertEquals(setOf(alice), throwing.tracked())
-    }
-
-    @Test
-    fun `a running claim hides the mail and blocks a second claim`() {
-        cache.track(alice, announceUnread = false)
-        loads[0].second.complete(listOf(mail(1), mail(2)))
-        assertTrue(cache.beginClaim(alice, 1))
-        assertFalse(cache.beginClaim(alice, 1))
-        assertEquals(listOf(2L), ids())
-        assertEquals(2, cache.unreadCount(alice))
-        cache.endClaim(alice, 1)
-        assertEquals(listOf(1L, 2L), ids())
-        assertFalse(cache.beginClaim(UUID.randomUUID(), 1), "players who are not tracked can't claim")
     }
 
     @Test

@@ -285,15 +285,6 @@ class MailSchemaTest {
     }
 
     @Test
-    fun `unclaim gives a claimed mail back`() {
-        val id = send(null)
-        store.claim(id, alice).join()
-        assertEquals(0, store.unclaim(id, bob).join())
-        assertEquals(1, store.unclaim(id, alice).join())
-        assertEquals(listOf(id), store.unclaimedFor(alice).join().map { it.id })
-    }
-
-    @Test
     fun `unclaimedFor reads one player's unclaimed mail, oldest first`() {
         val first = send(null, note = "first\nline")
         val second = send(null, sender = "<gold>Mother Mouse</gold>", rewards = "[]")
@@ -338,7 +329,7 @@ class MailSchemaTest {
     }
 
     @Test
-    fun `the trigger notifies new, claimed, unclaimed and deleted mail`() {
+    fun `the trigger notifies new, claimed and deleted mail`() {
         connect().use { listener ->
             listener.createStatement().use { it.execute("listen sneakymail") }
             val pg = listener.unwrap(PGConnection::class.java)
@@ -357,12 +348,8 @@ class MailSchemaTest {
             assertEquals(listOf("""{"event":"claimed","id":$id,"recipient":"$alice"}"""), received())
 
             exec("update sneakymail.mail set claimed_at = now() where id = ?", id)
-            assertEquals(emptyList(), received(), "claimed again: nothing")
-
-            store.unclaim(id, alice).join()
-            assertEquals(listOf("""{"event":"unclaimed","id":$id,"recipient":"$alice"}"""), received())
-            store.claim(id, alice).join()
-            assertEquals(listOf("""{"event":"claimed","id":$id,"recipient":"$alice"}"""), received())
+            exec("update sneakymail.mail set claimed_at = null where id = ?", id)
+            assertEquals(emptyList(), received(), "claimed again or reset by hand: nothing")
 
             exec("delete from sneakymail.mail where id = ?", id)
             assertEquals(listOf("""{"event":"deleted","id":$id,"recipient":"$alice"}"""), received())

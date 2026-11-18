@@ -8,14 +8,15 @@ import org.bukkit.entity.Player
 import org.bukkit.inventory.ItemStack
 import org.bukkit.plugin.IllegalPluginAccessException
 import org.bukkit.plugin.Plugin
+import java.util.UUID
+import java.util.concurrent.CompletionException
 import java.util.logging.Logger
 
 /**
  * A player collecting a mail from the /mail GUI: checks on the server thread, the claim in the database, then the
- * rewards on the server thread. Rewards are handed out only when this server's claim statement returned them.
- *
- * Every claim logs a line before its statement and one after its redemption, so a crash in between can be found
- * in the log and reconciled against `claimed_at`. [shutdown] settles the claims still in flight.
+ * rewards on the server thread at the next tick. The claim statement lets exactly one claim win on any server; a claim
+ * is never undone. Every claim logs a line before its statement and one line per reward given, so staff can tell
+ * from the logs what a claim handed out (docs/mail.md).
  */
 class MailClaims(
     private val plugin: Plugin,
@@ -23,15 +24,20 @@ class MailClaims(
     private val cache: MailCache,
     private val logger: Logger,
 ) {
-    private val inFlight = ClaimsInFlight()
+    /** One claim attempt; compared by identity. */
+    private class Attempt(val id: Long, val player: UUID, val name: String) {
+        var rewards: List<MailReward> = emptyList()
+        override fun toString() = "mail $id of $name ($player)"
+    }
+
+    private val pending = PendingClaims<Attempt>()
 
     /**
-     * Starts collecting mail [id] for [player] (server thread). False when the mail stays where it is: unknown, a claim
-     * of it already running, an item reward that SneakyItems doesn't know, or not enough room for the items.
+     * Starts collecting mail [id] for [player] (server thread). False when the mail stays where it is: unknown, an item
+     * reward that SneakyItems doesn't know, or not enough room for the items.
      */
     fun collect(player: Player, id: Long): Boolean {
-        val uuid = player.uniqueId
-        val mail = cache.unclaimed(uuid).firstOrNull { it.id == id }
+        val mail = cache.unclaimed(player.uniqueId).firstOrNull { it.id == id }
         if (mail == null) {
             player.sendMessage(Component.text("You have already collected this mail", NamedTextColor.RED))
             return false
@@ -46,77 +52,72 @@ class MailClaims(
             player.sendMessage(Component.text("Make room in your inventory to collect this mail", NamedTextColor.RED))
             return false
         }
-        // The guard is per mail and outlives the player's session: a claim still running from before a rejoin blocks.
-        val claim = inFlight.start(id, uuid, player.name) ?: return false
-        cache.beginClaim(uuid, id)
-        logger.info("Claiming mail $id for ${player.name} ($uuid)")
+        val attempt = Attempt(id, player.uniqueId, player.name)
+        logger.info("Claiming mail $id for ${player.name} (${player.uniqueId})")
+        pending.started(attempt)
         try {
-            store.claim(id, uuid).whenComplete { rewards, error ->
-                if (error != null) failed(claim, error) else finished(claim, rewards)
-            }
+            store.claim(id, player.uniqueId).whenComplete { rewards, error -> claimed(attempt, rewards, error) }
         } catch (error: Exception) {
-            failed(claim, error)
+            claimed(attempt, null, error)
         }
         return true
     }
 
-    /**
-     * Server thread, from onDisable while players are still online: hands out claims whose rewards are known, and
-     * reports claims whose statement is still running.
-     */
+    /** onDisable, server thread, players still online: hands out committed claims and reports running statements. */
     fun shutdown() {
-        val (running, claimed) = inFlight.shutdown()
-        for (claim in running) {
-            logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}): its claim (started ${claim.startedAt}) was " +
-                "still running when SneakyMail stopped, so it may be claimed without its rewards. ${CHECK_LOGS.format(claim.id)}")
+        val (running, committed) = pending.shutdown()
+        for (attempt in running) {
+            logger.severe("Possibly claimed, $attempt: the claim statement was still running when SneakyMail stopped. $STAFF")
         }
-        for (claim in claimed) deliver(claim, claim.rewards!!)
+        for (attempt in committed) handOut(attempt)
     }
 
     /** SneakyDB thread. */
-    private fun failed(claim: ClaimsInFlight.Claim, failure: Throwable) {
-        val current = inFlight.failed(claim)
-        val error = unwrap(failure)
-        if (error is MailStore.ClaimTimedOut) {
-            // Rolled back: the mail was definitely not claimed, so the player may simply try again.
-            logger.warning("Claim of mail ${claim.id} for ${claim.name} (${claim.player}) timed out waiting for the row " +
-                "(${error.cause?.javaClass?.simpleName}); nothing was claimed")
-            if (!current) return
-            onServerThread {
-                cache.endClaim(claim.player, claim.id)
-                Bukkit.getPlayer(claim.player)?.sendMessage(
-                    Component.text("This mail is busy right now. Please try again in a moment", NamedTextColor.RED))
+    private fun claimed(attempt: Attempt, rewards: List<MailReward>?, failure: Throwable?) {
+        if (failure != null) {
+            pending.ended(attempt)
+            val error = if (failure is CompletionException && failure.cause != null) failure.cause!! else failure
+            if (error is MailStore.ClaimTimedOut) {
+                logger.warning("Claim of $attempt timed out waiting for the row; nothing was claimed")
+                tell(attempt, "This mail is busy right now. Please try again in a moment")
+            } else {
+                logger.severe("Possibly claimed, $attempt: the claim statement failed (${error.javaClass.simpleName}). $STAFF")
+                tell(attempt, "An error occurred while collecting this mail. Please tell staff")
             }
             return
         }
-        logger.severe("Claim of mail ${claim.id} for ${claim.name} (${claim.player}, started ${claim.startedAt}) failed " +
-            "(${error.javaClass.simpleName}); it may still have committed. ${CHECK_LOGS.format(claim.id)}")
-        if (!current) return
-        onServerThread {
-            cache.endClaim(claim.player, claim.id)
-            Bukkit.getPlayer(claim.player)?.sendMessage(
-                Component.text("An error occurred while collecting this mail. Please tell staff", NamedTextColor.RED))
+        if (rewards == null) {
+            pending.ended(attempt)
+            onServerThread {
+                cache.gone(attempt.id, attempt.player)
+                Bukkit.getPlayer(attempt.player)?.sendMessage(Component.text("You have already collected this mail", NamedTextColor.RED))
+            }
+            return
         }
+        attempt.rewards = rewards
+        if (!pending.committed(attempt)) {
+            notGiven(attempt, "the claim finished after SneakyMail stopped")
+            return
+        }
+        // When this can't be scheduled the plugin is stopping, and shutdown() hands the rewards out.
+        onServerThread { if (pending.take(attempt)) handOut(attempt) }
     }
 
-    /** SneakyDB thread. */
-    private fun finished(claim: ClaimsInFlight.Claim, rewards: List<MailReward>?) {
-        when (inFlight.finished(claim, rewards)) {
-            ClaimsInFlight.Outcome.NOTHING -> onServerThread {
-                cache.endClaim(claim.player, claim.id)
-                cache.gone(claim.id, claim.player)
-                Bukkit.getPlayer(claim.player)?.sendMessage(Component.text("You have already collected this mail", NamedTextColor.RED))
-            }
-            // When this can't be scheduled the plugin is stopping, and shutdown() hands the rewards out.
-            ClaimsInFlight.Outcome.HAND_OUT -> onServerThread {
-                val taken = inFlight.take(claim) ?: return@onServerThread
-                cache.endClaim(claim.player, claim.id)
-                deliver(claim, taken)
-            }
-            ClaimsInFlight.Outcome.LATE_CLAIMED -> undo(claim, "its claim finished after SneakyMail stopped")
-            ClaimsInFlight.Outcome.LATE_NOTHING ->
-                logger.info("Mail ${claim.id} of ${claim.name}: the claim that was running at shutdown claimed nothing")
-        }
+    /** Server thread. */
+    private fun handOut(attempt: Attempt) {
+        cache.gone(attempt.id, attempt.player)
+        // The same player object, or the new one when they left and came back meanwhile.
+        val player = Bukkit.getPlayer(attempt.player)
+        if (player == null) notGiven(attempt, "${attempt.name} was offline when the rewards were due")
+        else give(player, attempt.id, attempt.rewards)
+    }
+
+    private fun notGiven(attempt: Attempt, why: String) {
+        logger.severe("Claimed, rewards not given, $attempt: $why. Rewards: ${MailRewards.encode(attempt.rewards)}. $STAFF")
+    }
+
+    private fun tell(attempt: Attempt, message: String) = onServerThread {
+        Bukkit.getPlayer(attempt.player)?.sendMessage(Component.text(message, NamedTextColor.RED))
     }
 
     private fun onServerThread(task: () -> Unit) {
@@ -127,56 +128,9 @@ class MailClaims(
         }
     }
 
-    /** Server thread: the claim is this server's; hands out [rewards] or, when the player is gone, gives the mail back. */
-    private fun deliver(claim: ClaimsInFlight.Claim, rewards: List<MailReward>) {
-        // The same player object, or the new one when they left and came back meanwhile.
-        val player = Bukkit.getPlayer(claim.player)
-        if (player == null) {
-            undo(claim, "${claim.name} left before the rewards were handed out")
-            return
-        }
-        cache.gone(claim.id, claim.player)
-        give(player, claim.id, rewards)
-    }
-
-    /** The claim committed but nothing was handed out: give the mail back so the next join shows it again. */
-    private fun undo(claim: ClaimsInFlight.Claim, reason: String) {
-        logger.warning("Mail ${claim.id} of ${claim.name} (${claim.player}) was claimed but $reason; giving it back")
-        try {
-            store.unclaim(claim.id, claim.player).whenComplete { _, error -> if (error != null) undoUncertain(claim, error) }
-        } catch (error: Exception) {
-            undoUncertain(claim, error)
-        }
-    }
-
-    /**
-     * The give-back failed or its reply was lost: it may have committed, and another server may have claimed and
-     * handed out the mail since. Never tell staff to reset it blindly.
-     */
-    private fun undoUncertain(claim: ClaimsInFlight.Claim, error: Throwable) {
-        logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}), claimed here at about ${claim.startedAt} without " +
-            "its rewards being handed out: giving it back failed or its reply was lost (${error.javaClass.simpleName}), so " +
-            "it may or may not be claimed now, and another server may have handed it out since. ${CHECK_LOGS.format(claim.id)}")
-    }
-
-    private companion object {
-        /** What staff do with a claim whose outcome is unknown; never a blind reset of claimed_at or a blanket re-give. */
-        const val CHECK_LOGS = "Staff: before touching claimed_at, search every server's log for \"mail %d \": the Claiming " +
-            "line, one Gave or failed line per reward, and the Redeemed line. Give by hand only rewards that have no Gave " +
-            "line on any server, after checking the game state where a reward shows (balance, inventory); never reset " +
-            "claimed_at blindly"
-
-        fun unwrap(error: Throwable): Throwable {
-            var current = error
-            while ((current is java.util.concurrent.CompletionException || current is java.util.concurrent.ExecutionException) &&
-                current.cause != null) current = current.cause!!
-            return current
-        }
-    }
-
     /**
      * Hands out every reward; one that fails is logged and the rest still run. Each reward given is logged before the
-     * next one starts, so an interrupted redemption shows which rewards ran. The claim is never undone here.
+     * next one starts, so an interrupted redemption shows which rewards ran.
      */
     private fun give(player: Player, id: Long, rewards: List<MailReward>) {
         val who = "${player.name} (${player.uniqueId})"
@@ -230,5 +184,10 @@ class MailClaims(
         val copy = Bukkit.createInventory(null, 36)
         copy.storageContents = player.inventory.storageContents.map { it?.clone() }.toTypedArray()
         return copy.addItem(*stacks.toTypedArray()).isEmpty()
+    }
+
+    private companion object {
+        const val STAFF = "Staff: search every server's log for this mail's Gave lines and give by hand only rewards " +
+            "without one (see docs/mail.md); never reset claimed_at"
     }
 }
