@@ -7,6 +7,7 @@ import net.kyori.adventure.text.format.TextDecoration
 import net.kyori.adventure.text.minimessage.MiniMessage
 import org.bukkit.Bukkit
 import org.bukkit.Material
+import org.bukkit.NamespacedKey
 import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
@@ -26,9 +27,7 @@ class MailGUI(player: Player, mail: List<MailRecord>) : DisplayOnlyInventoryHold
         val bgItem = ItemStack(Material.JIGSAW)
         val bgMeta = bgItem.itemMeta
         bgMeta.isHideTooltip = true
-        val bgModelData = bgMeta.customModelDataComponent
-        bgModelData.floats = listOf(3024f)
-        bgMeta.setCustomModelDataComponent(bgModelData)
+        bgMeta.itemModel = BACKGROUND_MODEL
         bgItem.itemMeta = bgMeta
         inventory.setItem(0, bgItem)
 
@@ -46,9 +45,7 @@ class MailGUI(player: Player, mail: List<MailRecord>) : DisplayOnlyInventoryHold
                     .colorIfAbsent(NamedTextColor.GRAY)
                     .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE)
             })
-            val modelData = meta.customModelDataComponent
-            modelData.floats = listOf(75f)
-            meta.setCustomModelDataComponent(modelData)
+            meta.itemModel = ENVELOPE_MODEL
             meta.persistentDataContainer.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, record.id.toString())
 
             item.itemMeta = meta
@@ -65,6 +62,9 @@ class MailGUI(player: Player, mail: List<MailRecord>) : DisplayOnlyInventoryHold
     }
 
     companion object {
+        // Pack item definitions (craftengine-resources); they replaced jigsaw/rabbit_foot custom_model_data 3024/75.
+        private val BACKGROUND_MODEL = NamespacedKey("lom", "gui/mail")
+        private val ENVELOPE_MODEL = NamespacedKey("lom", "items/envelope")
         val openInventories: MutableSet<Inventory> = mutableSetOf()
         val listener = object : Listener {
             @EventHandler
