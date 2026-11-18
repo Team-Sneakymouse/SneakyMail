@@ -229,6 +229,31 @@ class MailSchemaTest {
     }
 
     @Test
+    fun `the plugin's send gives up on an uncommitted insert of the same key instead of holding a worker`() {
+        val api = MailApiService().also { it.ready(store) }
+        connect().use { holder ->
+            holder.autoCommit = false
+            send("held", connection = holder, sender = "Phone", note = "Note", rewards = """[{"type":"command","command":"reward {player}"}]""")
+            val started = System.nanoTime()
+            val error = assertFailsWith<java.util.concurrent.ExecutionException> {
+                store.send("held", alice, "Phone", "Note", listOf(MailReward.CommandReward("reward {player}"))).get(30, TimeUnit.SECONDS)
+            }
+            val waited = (System.nanoTime() - started) / 1_000_000
+            assertEquals("55P03", (error.cause as SQLException).sqlState)
+            assertTrue(waited in 4_000..14_000, "gave up after the 5 s lock timeout: $waited ms")
+            val apiError = assertFailsWith<java.util.concurrent.ExecutionException> {
+                api.submitCommandMail("held", alice, "Phone", "Note", "reward {player}").get(30, TimeUnit.SECONDS)
+            }
+            assertIs<SQLException>(apiError.cause, "a timeout is not a reused key: the caller retries with the same key")
+            holder.rollback()
+        }
+        val id = store.send("held", alice, "Phone", "Note", listOf(MailReward.CommandReward("reward {player}"))).get(10, TimeUnit.SECONDS)
+        assertEquals(id.toString(), api.submitCommandMail("held", alice, "Phone", "Note", "reward {player}").get(10, TimeUnit.SECONDS).requestId(),
+            "the retry with the same key works once the other insert is gone")
+        api.close()
+    }
+
+    @Test
     fun `send runs as its owner and only for roles granted EXECUTE`() {
         val password = UUID.randomUUID().toString()
         exec("drop role if exists sneakymail_test_caller")

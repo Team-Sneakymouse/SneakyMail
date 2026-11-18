@@ -42,10 +42,18 @@ class MailStore(private val db: SneakyDBApi, private val logger: Logger) {
     /** The claim statement of mail [id] hit its lock or statement timeout and was rolled back: nothing was claimed. */
     class ClaimTimedOut(val id: Long, cause: SQLException) : RuntimeException("Claim of mail $id timed out", cause)
 
-    /** `sneakymail.send`: the new mail's id, or the existing one for a [sourceKey] sent before with the same content. */
+    /**
+     * `sneakymail.send`: the new mail's id, or the existing one for a [sourceKey] sent before with the same content.
+     * Runs with the claim's lock and statement timeouts, so waiting on an uncommitted insert of the same key can't
+     * hold a SneakyDB worker forever; a timeout (SQLSTATE 55P03 or 57014) rolled back and may be retried with the key.
+     */
     fun send(sourceKey: String?, recipient: UUID, senderName: String, note: String, rewards: List<MailReward>): CompletableFuture<Long> =
-        db.query(SEND, listOf(sourceKey, recipient, senderName, note, MailRewards.encode(rewards)))
-            .thenApply { rows -> (rows.single()["id"] as Number).toLong() }
+        db.transaction { tx ->
+            tx.execute(LOCK_TIMEOUT, emptyList<Any>())
+            tx.execute(STATEMENT_TIMEOUT, emptyList<Any>())
+            val rows = tx.query(SEND, listOf(sourceKey, recipient, senderName, note, MailRewards.encode(rewards)))
+            (rows.single()["id"] as Number).toLong()
+        }
 
     private fun toRecord(row: Map<String, Any?>): MailRecord? {
         val id = (row["id"] as Number).toLong()

@@ -2,6 +2,7 @@ package com.danidipp.sneakymail
 
 import com.danidipp.sneakymail.api.SneakyMailApi
 import com.sneakydb.SneakyDBApi
+import com.sneakydb.SneakyDBTransaction
 import java.sql.SQLException
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -26,6 +27,33 @@ class MailApiServiceTest {
             this.sql = sql; this.parameters = parameters; return result
         }
         override fun execute(sql: String, parameters: List<*>): CompletableFuture<Int> = CompletableFuture.completedFuture(1)
+
+        /** Statements the transaction's work ran before its query (the `set local` timeouts). */
+        val settings = mutableListOf<String>()
+
+        /**
+         * Records the work's statements at once (its first query stops that pass), then runs it again with [result]'s
+         * rows once a test completes [result].
+         */
+        override fun <T> transaction(work: java.util.function.Function<SneakyDBTransaction, T>): CompletableFuture<T> {
+            try {
+                work.apply(object : SneakyDBTransaction {
+                    override fun query(sql: String, parameters: List<*>): List<Map<String, Any?>> {
+                        this@Database.sql = sql; this@Database.parameters = parameters; throw Recorded()
+                    }
+                    override fun execute(sql: String, parameters: List<*>): Int { settings += sql; return 0 }
+                })
+            } catch (_: Recorded) {
+            }
+            return result.thenApply { rows ->
+                work.apply(object : SneakyDBTransaction {
+                    override fun query(sql: String, parameters: List<*>) = rows
+                    override fun execute(sql: String, parameters: List<*>) = 0
+                })
+            }
+        }
+
+        private class Recorded : RuntimeException()
     }
 
     private val db = Database()
@@ -66,6 +94,7 @@ class MailApiServiceTest {
         val future = service.submitCommandMail("phone:one", recipient, "Phone", "note", "reward {player}")
         assertFalse(future.isDone)
         assertEquals(MailStore.SEND, db.sql)
+        assertEquals(listOf(MailStore.LOCK_TIMEOUT, MailStore.STATEMENT_TIMEOUT), db.settings, "send runs with the timeouts")
         assertEquals(listOf("phone:one", recipient, "Phone", "note", """[{"type":"command","command":"reward {player}"}]"""), db.parameters)
         db.result.complete(listOf(mapOf("id" to 42L)))
         assertEquals("42", future.join().requestId())

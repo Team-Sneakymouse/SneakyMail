@@ -162,11 +162,20 @@ class MailClaims(
                 logger.warning("Mail $id: SneakyItems no longer knows the item ${reward.item}")
                 false
             } else {
-                val stacks = RewardItems.stackAmounts(reward.amount, maxStack).mapNotNull { item.createFor(player, it) }
-                for (leftover in player.inventory.addItem(*stacks.toTypedArray()).values) {
-                    player.world.dropItem(player.location, leftover).owner = player.uniqueId
+                var notGiven = 0
+                val stacks = RewardItems.stackAmounts(reward.amount, maxStack).mapNotNull { amount ->
+                    item.createFor(player, amount) ?: null.also { notGiven += amount }
                 }
-                true
+                for (leftover in player.inventory.addItem(*stacks.toTypedArray()).values) {
+                    // dropItem returns the entity even when a plugin cancelled its ItemSpawnEvent: check it is in the world.
+                    val dropped = player.world.dropItem(player.location, leftover)
+                    if (dropped.isValid && !dropped.isDead) dropped.owner = player.uniqueId else notGiven += leftover.amount
+                }
+                if (notGiven > 0) {
+                    logger.severe("Mail $id of ${player.name} (${player.uniqueId}): $notGiven of ${reward.amount} ${reward.item} " +
+                        "not given (the item could not be created, or its drop at the player's feet was refused)")
+                }
+                notGiven == 0
             }
         }
     }

@@ -51,7 +51,9 @@ or a plain insert. Either shows up in game at once for an online recipient.
 - **Hand-out:** a committed claim's rewards are handed out on the next tick, in their order. Items that no longer fit
   drop at the player's feet. A reward that throws, a command that `dispatchCommand` refuses, or an item SneakyItems no
   longer knows is logged SEVERE with the mail id, the player and that reward's JSON, and the remaining rewards still
-  run. **A claim is never undone**: nothing writes `claimed_at` back to null.
+  run. An item reward also counts as failed when part of it could not be created or its drop at the player's feet was
+  refused (a cancelled `ItemSpawnEvent`); the SEVERE line names the amount not given. **A claim is never undone**:
+  nothing writes `claimed_at` back to null.
 - **Log lines per claim:** `Claiming mail <id> for <player> (<uuid>)` before the claim statement; for every reward,
   before the next one starts, either `Gave reward <i>/<n> of mail <id> to <player> (<uuid>): <reward JSON>` or a
   SEVERE `Reward <i>/<n> of mail <id> for ... failed (...)`; then `Redeemed mail <id> for <player> (<uuid>): <k> of
@@ -90,7 +92,10 @@ SneakyMailProvider.getApi().submitCommandMail(
 ```
 
 - It calls `sneakymail.send(sourceKey, recipient, sender, note, [{"type":"command","command":command}], null)` and
-  completes with `MailAcceptance(String.valueOf(mailId))` once that statement committed. Acceptance means the mail
+  completes with `MailAcceptance(String.valueOf(mailId))` once that statement committed. The call runs in its own
+  transaction with `set local lock_timeout = '5s'` and `statement_timeout = '15s'`, so waiting on another
+  uncommitted insert of the same key fails the future (SQLSTATE 55P03 or 57014, rolled back) instead of holding a
+  SneakyDB worker; retry with the same key. Acceptance means the mail
   exists, not that it was claimed. Request ids are opaque; callers don't parse them.
 - Retrying with the same key and arguments returns the same request id. Reusing a key with a different recipient,
   sender, note or command fails with `IllegalArgumentException("Source key already used with different payload")`.
