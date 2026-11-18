@@ -37,3 +37,6 @@ build
 
 # Local planning artifacts
 .scratch/
+
+# Python
+__pycache__/

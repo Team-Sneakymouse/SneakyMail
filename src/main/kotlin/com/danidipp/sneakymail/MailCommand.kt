@@ -11,15 +11,16 @@ class MailCommand : Command("mail") {
         return mutableListOf()
     }
     override fun execute(sender: CommandSender, commandLabel: String, args: Array<out String>): Boolean {
-        if (!SneakyMail.getInstance().isEnabled) {
-            sender.sendMessage(Component.text("Plugin is disabled", NamedTextColor.RED))
+        val cache = SneakyMail.getInstance().cache
+        if (!SneakyMail.getInstance().isEnabled || cache == null) {
+            sender.sendMessage(Component.text("Mail is not available right now", NamedTextColor.RED))
             return true
         }
         if (sender !is Player) {
             sender.sendMessage("You must be a player to use this command")
             return true
         }
-        sender.openInventory(MailGUI(sender).inventory)
+        sender.openInventory(MailGUI(sender, cache.unclaimed(sender.uniqueId)).inventory)
         return true
     }
 }

@@ -17,10 +17,11 @@ import org.bukkit.inventory.Inventory
 import org.bukkit.inventory.ItemStack
 import org.bukkit.persistence.PersistentDataType
 
-class MailGUI(private val player: Player) : DisplayOnlyInventoryHolder {
-    private val inventory: Inventory
+/** The /mail inventory: one icon per unclaimed mail of [player], at random slots. Display-only. */
+class MailGUI(player: Player, mail: List<MailRecord>) : DisplayOnlyInventoryHolder {
+    private val inventory: Inventory = Bukkit.getServer().createInventory(this, 27, Component.text("Mail"))
+
     init {
-        inventory = Bukkit.getServer().createInventory(this, 27, Component.text("Mail"))
         openInventories.add(inventory)
         val bgItem = ItemStack(Material.JIGSAW)
         val bgMeta = bgItem.itemMeta
@@ -32,17 +33,15 @@ class MailGUI(private val player: Player) : DisplayOnlyInventoryHolder {
         inventory.setItem(0, bgItem)
 
         val mailItems = mutableListOf<ItemStack>()
-        for (mail in SneakyMail.mail) {
-            if(!mail.value.available) continue
-            val recipientUuid = mail.value.recipientUuidOrNull() ?: continue
-            if (player.uniqueId != recipientUuid) continue
+        for (record in mail) {
+            if (record.recipientUuid != player.uniqueId) continue
             val item = ItemStack(Material.RABBIT_FOOT)
             val meta = item.itemMeta
-            val sender = mail.value.sender_name.ifEmpty { "Unknown" }
+            val sender = record.senderName.ifEmpty { "Unknown" }
 
             meta.itemName(Component.text("Mail from ").append(MiniMessage.miniMessage().deserialize(sender))
                 .colorIfAbsent(NamedTextColor.YELLOW))
-            meta.lore(mail.value.note.replace("\r\n", "\n").split('\n').map { line ->
+            meta.lore(record.note.replace("\r\n", "\n").split('\n').map { line ->
                 MiniMessage.miniMessage().deserialize(line)
                     .colorIfAbsent(NamedTextColor.GRAY)
                     .decorationIfAbsent(TextDecoration.ITALIC, TextDecoration.State.FALSE)
@@ -50,8 +49,7 @@ class MailGUI(private val player: Player) : DisplayOnlyInventoryHolder {
             val modelData = meta.customModelDataComponent
             modelData.floats = listOf(75f)
             meta.setCustomModelDataComponent(modelData)
-            val data = meta.persistentDataContainer
-            data.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, mail.key)
+            meta.persistentDataContainer.set(SneakyMail.getInstance().mailKey, PersistentDataType.STRING, record.id.toString())
 
             item.itemMeta = meta
             mailItems += item
@@ -74,7 +72,8 @@ class MailGUI(private val player: Player) : DisplayOnlyInventoryHolder {
                 if (event.inventory.holder !is MailGUI) return
                 event.isCancelled = true
 
-                if (!SneakyMail.getInstance().isEnabled) {
+                val claims = SneakyMail.getInstance().claims
+                if (!SneakyMail.getInstance().isEnabled || claims == null) {
                     event.whoClicked.sendMessage(Component.text("SneakyMail is currently not available", NamedTextColor.RED))
                     event.whoClicked.closeInventory()
                     return
@@ -82,15 +81,12 @@ class MailGUI(private val player: Player) : DisplayOnlyInventoryHolder {
 
                 val item = event.currentItem ?: return
                 val data = item.itemMeta.persistentDataContainer
-                val mailId = data.get(SneakyMail.getInstance().mailKey, PersistentDataType.STRING) ?: return
-                val mail = SneakyMail.mail[mailId] ?: return
+                val mailId = data.get(SneakyMail.getInstance().mailKey, PersistentDataType.STRING)?.toLongOrNull() ?: return
 
                 val slot = event.rawSlot
                 val inventory = event.inventory
-                if (slot in 0 until inventory.size) {
-                    inventory.setItem(slot, null)
-                }
-                mail.redeem(event.whoClicked as Player)
+                if (slot !in 0 until inventory.size) return
+                if (claims.collect(event.whoClicked as Player, mailId)) inventory.setItem(slot, null)
             }
 
             @EventHandler

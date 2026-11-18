@@ -37,17 +37,22 @@ repositories {
 	maven("https://maven.sneakyrp.com/sneakymouse")
 }
 
+/** SneakyDB with migrations and notifications (migrate, listen). Older SneakyDB jars on a server fail with NoSuchMethodError. */
+val sneakyDbVersion = "2026.11.17-452c61d0f480"
+val sneakyItemsVersion = "2026.11.18-96c4561272da"
+
 dependencies {
 	implementation(kotlin("stdlib"))
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 	testImplementation(kotlin("test"))
-	compileOnly("io.github.team-sneakymouse:sneakydb-api:2026.10.24-4a58c0cac70a")
-	testImplementation("io.github.team-sneakymouse:sneakydb-api:2026.10.24-4a58c0cac70a")
-	testImplementation("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
+	compileOnly("io.github.team-sneakymouse:sneakydb-api:$sneakyDbVersion")
+	testImplementation("io.github.team-sneakymouse:sneakydb-api:$sneakyDbVersion")
+	// postgresTest: db/migrations against a real PostgreSQL
+	testImplementation("org.postgresql:postgresql:42.7.7")
 	compileOnly("io.papermc.paper:paper-api:26.2.build.117-stable")
 	compileOnly("me.clip:placeholderapi:2.11.6")
-	compileOnly("io.github.team-sneakymouse:sneakypocketbase-api:2026.10.28-1792010c7b91")
 	compileOnly("io.github.team-sneakymouse:sneakyutils:2026.11.10-7e1262ebd376")
+	compileOnly("io.github.team-sneakymouse:sneakyitems:$sneakyItemsVersion") { isTransitive = false }
 }
 
 tasks.processResources {
@@ -100,7 +105,21 @@ tasks.check {
 }
 
 tasks.test {
-	useJUnitPlatform()
+	useJUnitPlatform { excludeTags("postgres") }
+}
+
+// db/migrations and the store against a throwaway PostgreSQL named by SNEAKYMAIL_TEST_PG_URL
+// (jdbc:postgresql://host:port/db?user=...&password=...). Not part of check: CI has no PostgreSQL.
+val postgresTest by tasks.registering(Test::class) {
+	group = "verification"
+	description = "Run the migration and store tests against PostgreSQL (SNEAKYMAIL_TEST_PG_URL)."
+	testClassesDirs = sourceSets["test"].output.classesDirs
+	classpath = sourceSets["test"].runtimeClasspath
+	useJUnitPlatform { includeTags("postgres") }
+	doFirst {
+		if (System.getenv("SNEAKYMAIL_TEST_PG_URL").isNullOrBlank())
+			throw GradleException("postgresTest needs SNEAKYMAIL_TEST_PG_URL (a throwaway database; the tests drop the sneakymail and sneakydb schemas)")
+	}
 }
 
 val apiJar by tasks.registering(Jar::class) {
@@ -114,7 +133,7 @@ publishing.publications.create<MavenPublication>("api") {
  artifact(apiJar)
  pom {
   name.set("SneakyMail API")
-  description.set("JDK-only durable mail admission contract; compileOnly, never shade")
+  description.set("JDK-only command mail contract; compileOnly, never shade")
  }
 }
 
@@ -159,7 +178,7 @@ val verifyPublicApiArtifact by tasks.registering {
   ZipFile(tasks.jar.get().archiveFile.get().asFile).use { zip ->
    val entries = zip.entries().asSequence().map { it.name }.toList()
    expected.forEach { check(entries.count { entry -> entry == it } == 1) }
-   check(entries.none { it.startsWith("com/sneakydb/") || it.startsWith("com/danidipp/sneakypocketbase/") })
+   check(entries.none { it.startsWith("com/sneakydb/") || it.startsWith("com/sneakyitems/") || it.startsWith("com/sneakyutils/") })
   }
   val pom = layout.buildDirectory.file("publications/api/pom-default.xml").get().asFile.readText()
   check("<artifactId>sneakymail-api</artifactId>" in pom)

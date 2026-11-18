@@ -10,4 +10,12 @@ Before implementing, read `<policy-root>/README.md`. It is the policy index and 
 Build commands, architecture facts and recorded local exceptions in this file are authoritative for this repository. Where this file and the policy require incompatible actions, say so before expanding the work. Running checks and writing tests are separate decisions: a source edit does not by itself require a new test.
 <!-- END TEAM-POLICY MANAGED BOOTSTRAP -->
 
-When changing durable command-mail admission, delivery, or recovery, read `docs/durable-command-mail.md` and `docs/command-mail-journal.sql`.
+Mail lives in PostgreSQL (`sneakymail.mail`, through SneakyDB). Before changing the table, its functions, the cache,
+claiming, the Java API or the PocketBase import, read `docs/mail.md`. The names and signatures in
+`src/main/resources/db/migrations/V001__mail.sql` are a contract with other repositories (Mother-Mouse-Discord, n8n).
+
+| Task | Command |
+|------|---------|
+| Build, unit tests, API jar checks | `./gradlew check` |
+| V001 and the store against PostgreSQL | `SNEAKYMAIL_TEST_PG_URL=jdbc:postgresql://...  ./gradlew postgresTest` (throwaway database, e.g. `postgres:16` in Docker; see `docs/mail.md`) |
+| Import script tests | `python3 -m unittest discover -s tools`; add `SNEAKYMAIL_TEST_PG_DSN=<conninfo>` and psycopg to also test its writes |

@@ -22,12 +22,7 @@ class Placeholders : PlaceholderExpansion() {
 
     override fun onPlaceholderRequest(player: Player, identifier: String): String? {
         return when (identifier) {
-            "unread_count" -> {
-                val mailCount = SneakyMail.mail.values.count {
-                    it.available && it.recipientUuidOrNull() == player.uniqueId
-                }
-                mailCount.toString()
-            }
+            "unread_count" -> (SneakyMail.getInstance().cache?.unreadCount(player.uniqueId) ?: 0).toString()
             else -> null
         }
     }
