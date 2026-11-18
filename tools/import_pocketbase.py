@@ -41,7 +41,9 @@ It refuses to commit, in a dry run too (exit code 1), when:
 - a journal key ends up on no imported row (record gone, skipped or carrying another key), unless
   --accept-lost-journal-keys accepts that a retry of those keys sends the mail again;
 - a journal row was never confirmed, unless --accept-unconfirmed-journal-rows accepts that its mail is not sent again;
-- an unclaimed mail has rewards that are still invalid, or a lootbox number that is no time.
+- an unclaimed mail has rewards that are still invalid, or a lootbox number that is no time;
+- two records would carry the same source key, or a key is not 1 to 512 characters long. Keys are imported exactly
+  as PocketBase has them (no trimming); only an empty key counts as no key.
 Claimed mail with invalid rewards is skipped and listed; claimed mail with a lootbox number that is no time is
 imported without expires_at and listed.
 
@@ -211,7 +213,8 @@ class Plan:
     journal_conflicts: list[str] = field(default_factory=list)  # a key and a record the journal doesn't pair: refuse
     journal_unmatched: list[str] = field(default_factory=list)  # journal keys no imported row carries: refuse
     journal_unconfirmed: list[str] = field(default_factory=list)  # refuse
-    duplicate_keys: list[str] = field(default_factory=list)
+    duplicate_keys: list[str] = field(default_factory=list)  # two records with one key: refuse
+    invalid_keys: list[str] = field(default_factory=list)  # keys the table can't hold: refuse
     invalid: list[str] = field(default_factory=list)  # claimed mail, skipped
     invalid_unclaimed: list[str] = field(default_factory=list)  # refuse
     bad_times: list[str] = field(default_factory=list)  # lootbox numbers that are no time
@@ -267,7 +270,9 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
 
         # A row whose key is in the journal, wherever the key came from, keeps exactly what lom-phone-app was told was
         # admitted: send() compares a retry with it.
-        own_key = (record.get("source_key") or "").strip() or None
+        # Kept exactly as PocketBase has it (its unique index covers every key but ''): only '' means no key.
+        raw_key = record.get("source_key")
+        own_key = raw_key if isinstance(raw_key, str) and raw_key != "" else None
         entry = None
         if journal is not None:
             by_id = journal.get(record["id"])
@@ -348,13 +353,11 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
             differ = [name for name in wanted if wanted[name] != have[name]]
             if differ:
                 plan.journal_mismatches.append(f"{record['id']} (key {key}): {', '.join(differ)} differ from the journal")
-        if key is not None and len(key) > 512:
-            plan.invalid.append(f"{record['id']}: source key longer than 512 characters, imported without it")
-            key = None
+        if key is not None and not 1 <= len(key) <= 512:
+            plan.invalid_keys.append(f"{record['id']}: source key of {len(key)} characters (the table takes 1 to 512)")
         if key is not None:
             if key in used_keys:
-                plan.duplicate_keys.append(f"{record['id']}: key {key} already on {used_keys[key]}, imported without it")
-                key = None
+                plan.duplicate_keys.append(f"{record['id']}: key {key!r} is also on {used_keys[key]}")
             else:
                 used_keys[key] = record["id"]
 
@@ -403,6 +406,10 @@ def refusals(plan: Plan, accept_lost_keys: bool = False, accept_unconfirmed: boo
         reasons.append(f"{len(plan.journal_mismatches)} journal-keyed rows differ from their journal payload")
     if plan.journal_conflicts:
         reasons.append(f"{len(plan.journal_conflicts)} records carry a source key the journal pairs differently")
+    if plan.duplicate_keys:
+        reasons.append(f"{len(plan.duplicate_keys)} records would carry a source key another record already carries")
+    if plan.invalid_keys:
+        reasons.append(f"{len(plan.invalid_keys)} records carry a source key the table can't hold")
     if plan.journal_unmatched and not accept_lost_keys:
         reasons.append(f"{len(plan.journal_unmatched)} journal keys would not be imported, so a lom-phone-app retry "
                        f"would send that mail again (accept that with {ACCEPT_LOST})")
@@ -569,7 +576,8 @@ def report(plan: Plan) -> None:
         ("UNCLAIMED MAIL WITH INVALID REWARDS", plan.invalid_unclaimed),
         ("UNCLAIMED MAIL WITH A LOOTBOX NUMBER THAT IS NO TIME", plan.bad_times_unclaimed),
         ("claimed mail with a lootbox number that is no time (imported without expires_at)", plan.bad_times),
-        ("duplicate source keys", plan.duplicate_keys),
+        ("DUPLICATE SOURCE KEYS", plan.duplicate_keys),
+        ("SOURCE KEYS THE TABLE CAN'T HOLD", plan.invalid_keys),
         ("claimed mail skipped as invalid", plan.invalid),
     ):
         if lines:
@@ -625,6 +633,13 @@ def main(argv: list[str] | None = None) -> int:
 
         plan = build_plan(records, accounts, journal, known_items, now)
         report(plan)
+        reasons = refusals(plan, args.accept_lost_journal_keys, args.accept_unconfirmed_journal_rows)
+        if reasons:
+            connection.rollback()
+            print("REFUSED, nothing written" + (" (dry run)" if args.dry_run else "") + ":")
+            for reason in reasons:
+                print("  " + reason)
+            return 1
         found = write(cur, plan)
         want = expected(plan)
         print("written:")
@@ -634,13 +649,6 @@ def main(argv: list[str] | None = None) -> int:
         if wrong:
             connection.rollback()
             print("MISMATCH, rolled back:", ", ".join(wrong))
-            return 1
-        reasons = refusals(plan, args.accept_lost_journal_keys, args.accept_unconfirmed_journal_rows)
-        if reasons:
-            connection.rollback()
-            print("REFUSED, rolled back" + (" (dry run)" if args.dry_run else "") + ":")
-            for reason in reasons:
-                print("  " + reason)
             return 1
         if args.dry_run:
             connection.rollback()

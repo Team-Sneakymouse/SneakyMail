@@ -182,10 +182,27 @@ class Plan(unittest.TestCase):
         self.assertIn("unclaimed (unclaimed)", plan.bad_times_unclaimed[0])
         self.assertEqual(["1 unclaimed mails have a lootbox number that is no time"], refusals(plan))
 
-    def test_source_keys_of_their_own(self):
-        plan = plan_of(record("a", source_key="shop_1"), record("b", source_key="  "), record("c", source_key="shop_1", created="2026-02-01 00:00:00.000Z"))
-        self.assertEqual({"a": "shop_1", "b": None, "c": None}, {row.pb_id: row.source_key for row in plan.rows})
-        self.assertEqual(["c: key shop_1 already on a, imported without it"], plan.duplicate_keys)
+    def test_source_keys_of_their_own_are_kept_exactly(self):
+        plan = plan_of(record("a", source_key="shop_1"), record("b", source_key="  "), record("c", source_key=" shop_2 "),
+                       record("d", source_key=""), {**record("e"), "source_key": None})
+        self.assertEqual({"a": "shop_1", "b": "  ", "c": " shop_2 ", "d": None, "e": None},
+                         {row.pb_id: row.source_key for row in plan.rows})
+        self.assertEqual([], refusals(plan))
+
+    def test_two_records_with_one_key_refuse_the_import(self):
+        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
+        # PocketBase's unique index stops two records with one key of their own; a journal key can still collide.
+        plan = plan_of(record("a", source_key="lomphone:1"), record("b"), journal={"b": JournalRow("lomphone:1", payload, True)})
+        self.assertEqual({"a": "lomphone:1", "b": "lomphone:1"}, {row.pb_id: row.source_key for row in plan.rows},
+                         "no key is dropped to get past uniqueness")
+        self.assertEqual(["b: key 'lomphone:1' is also on a"], plan.duplicate_keys)
+        self.assertIn("1 records would carry a source key another record already carries",
+                      refusals(plan, accept_lost_keys=True, accept_unconfirmed=True))
+
+    def test_a_key_the_table_cannot_hold_refuses_the_import(self):
+        plan = plan_of(record("a", source_key="k" * 513), record("b", source_key="k" * 512))
+        self.assertEqual(["a: source key of 513 characters (the table takes 1 to 512)"], plan.invalid_keys)
+        self.assertEqual(["1 records carry a source key the table can't hold"], refusals(plan))
 
     def test_source_keys_from_the_journal(self):
         payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
