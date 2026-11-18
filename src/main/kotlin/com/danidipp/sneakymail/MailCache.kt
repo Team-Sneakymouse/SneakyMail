@@ -12,8 +12,10 @@ import java.util.logging.Logger
  * Every method except [unreadCount] runs on the server thread, and [main] runs load results there. [unreadCount]
  * may be called from any thread (PlaceholderAPI does).
  *
- * Loads for one player never overlap: a reload asked for while one runs follows it, so results apply in order.
- * Mail that was claimed or deleted during the player's session stays out even when an older load still returns it.
+ * The database decides: every change notification reloads the recipient. Loads for one player never overlap (a reload
+ * asked for while one runs follows it), so results apply in order. A mail that was claimed or deleted while a load was
+ * running stays out of that load's result, which may have been read before the claim; the load after it, read after
+ * the claim committed, decides again, so a mail that was given back (unclaimed) shows up again.
  */
 class MailCache(
     private val load: (UUID) -> CompletableFuture<List<MailRecord>>,
@@ -36,8 +38,8 @@ class MailCache(
         var reloadAfter = false
         /** Ids of "new" notifications whose mail the next load should announce. */
         val announce = mutableSetOf<Long>()
-        /** Ids claimed or deleted during this session: never shown again. */
-        val gone = mutableSetOf<Long>()
+        /** Ids claimed or deleted since the running load started: that load's result may still hold them. */
+        val goneDuringLoad = mutableSetOf<Long>()
         /** Ids whose claim is running. */
         val claiming = mutableSetOf<Long>()
     }
@@ -63,20 +65,29 @@ class MailCache(
         players.forEach { (player, state) -> requestLoad(player, state) }
     }
 
+    /** Reads [player]'s mail again, e.g. after an "unclaimed" notification. */
+    fun reload(player: UUID) {
+        val state = players[player] ?: return
+        requestLoad(player, state)
+    }
+
     /** A "new" notification: mail [id] was inserted for [recipient]. */
     fun created(id: Long, recipient: UUID) {
         val state = players[recipient] ?: return
-        if (id in state.gone) return
         state.announce += id
         requestLoad(recipient, state)
     }
 
-    /** A "claimed" or "deleted" notification, or this server's own claim: mail [id] is no longer claimable. */
+    /**
+     * A "claimed" or "deleted" notification, or this server's own claim: mail [id] is no longer claimable. It leaves
+     * the cache at once and the recipient is read again.
+     */
     fun gone(id: Long, recipient: UUID) {
         val state = players[recipient] ?: return
-        state.gone += id
         state.announce -= id
+        if (state.loading) state.goneDuringLoad += id
         if (id in state.mail) state.mail = state.mail - id
+        requestLoad(recipient, state)
     }
 
     /** False when a claim of [id] is already running (a double click). */
@@ -106,6 +117,7 @@ class MailCache(
             return
         }
         state.loading = true
+        state.goneDuringLoad.clear()
         val future = try {
             load(player)
         } catch (error: Exception) {
@@ -120,7 +132,8 @@ class MailCache(
         if (error != null || rows == null) {
             logger.warning("Could not load mail of $player: ${error?.javaClass?.simpleName}")
         } else {
-            state.mail = rows.filter { it.id !in state.gone }.associateBy { it.id }
+            // A mail gone during this load is followed by another load (gone() asked for it), which decides for good.
+            state.mail = rows.filter { it.id !in state.goneDuringLoad }.associateBy { it.id }
             var announced = 0
             for (id in state.announce.toList()) {
                 val record = state.mail[id] ?: continue
@@ -136,6 +149,7 @@ class MailCache(
             // has seen every announced mail: whatever it didn't find was claimed or deleted already.
             if (!state.reloadAfter) state.announce.clear()
         }
+        state.goneDuringLoad.clear()
         if (state.reloadAfter) {
             state.reloadAfter = false
             requestLoad(player, state)

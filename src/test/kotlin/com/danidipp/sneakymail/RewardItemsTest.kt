@@ -15,6 +15,24 @@ class RewardItemsTest {
     }
 
     @Test
+    fun `giveAll runs every reward even when some fail or throw`() {
+        val rewards = listOf(MailReward.CommandReward("a"), MailReward.CommandReward("b"), MailReward.ItemReward("c", 1), MailReward.CommandReward("d"))
+        val given = mutableListOf<MailReward>()
+        val failures = mutableListOf<Pair<MailReward, String?>>()
+        val failed = RewardItems.giveAll(rewards, { reward ->
+            given += reward
+            when (reward) {
+                MailReward.CommandReward("b") -> false
+                is MailReward.ItemReward -> throw IllegalStateException("boom")
+                else -> true
+            }
+        }) { reward, error -> failures += reward to error?.message }
+        assertEquals(rewards, given)
+        assertEquals(2, failed)
+        assertEquals(listOf<Pair<MailReward, String?>>(MailReward.CommandReward("b") to null, MailReward.ItemReward("c", 1) to "boom"), failures)
+    }
+
+    @Test
     fun `stack amounts split by the maximum stack size`() {
         assertEquals(listOf(1), RewardItems.stackAmounts(1, 64))
         assertEquals(listOf(64), RewardItems.stackAmounts(64, 64))

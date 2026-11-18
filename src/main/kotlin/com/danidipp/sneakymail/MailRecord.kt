@@ -38,4 +38,7 @@ object MailRewards {
     fun parse(text: String): List<MailReward> = json.decodeFromString(serializer, text)
 
     fun encode(rewards: List<MailReward>): String = json.encodeToString(serializer, rewards)
+
+    /** One reward as its JSON object, for logs. */
+    fun encode(reward: MailReward): String = json.encodeToString(MailReward.serializer(), reward)
 }

@@ -99,6 +99,7 @@ class SneakyMail : JavaPlugin() {
                     when (notification.event) {
                         MailNotification.Event.NEW -> cache.created(notification.id, notification.recipient)
                         MailNotification.Event.CLAIMED, MailNotification.Event.DELETED -> cache.gone(notification.id, notification.recipient)
+                        MailNotification.Event.UNCLAIMED -> cache.reload(notification.recipient)
                     }
                 }
             }) { main.execute { cache.reloadAll() } }
@@ -116,6 +117,8 @@ class SneakyMail : JavaPlugin() {
 
     override fun onDisable() {
         ++generation
+        // Players are still online here: claims whose rewards are known get handed out now.
+        claims?.shutdown()
         subscription?.close()
         subscription = null
         placeholders?.unregister()

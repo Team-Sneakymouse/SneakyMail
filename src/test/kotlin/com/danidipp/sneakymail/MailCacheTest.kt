@@ -114,7 +114,7 @@ class MailCacheTest {
     }
 
     @Test
-    fun `mail claimed or deleted during the session stays out of older load results`() {
+    fun `a load that ran while a mail was claimed can't bring it back, the next load decides`() {
         cache.track(alice, announceUnread = false)
         loads[0].second.complete(listOf(mail(1), mail(2)))
         cache.reloadAll()
@@ -122,8 +122,41 @@ class MailCacheTest {
         assertEquals(listOf(2L), ids())
         loads[1].second.complete(listOf(mail(1), mail(2))) // read before the claim committed
         assertEquals(listOf(2L), ids())
-        cache.created(1, alice)
-        assertEquals(2, loads.size, "a gone id does not come back through a notification either")
+        assertEquals(3, loads.size, "the claim asked for a load read after it")
+        loads[2].second.complete(listOf(mail(2)))
+        assertEquals(listOf(2L), ids())
+        assertEquals(3, loads.size)
+    }
+
+    @Test
+    fun `a claim while no load runs removes the mail and reads the player again`() {
+        cache.track(alice, announceUnread = false)
+        loads[0].second.complete(listOf(mail(1), mail(2)))
+        cache.gone(1, alice)
+        assertEquals(listOf(2L), ids())
+        assertEquals(2, loads.size)
+        loads[1].second.complete(listOf(mail(2)))
+        assertEquals(listOf(2L), ids())
+    }
+
+    @Test
+    fun `a mail given back after its claim shows up again`() {
+        cache.track(alice, announceUnread = false)
+        loads[0].second.complete(listOf(mail(1)))
+        cache.gone(1, alice)
+        loads[1].second.complete(emptyList())
+        assertEquals(emptyList(), ids())
+        cache.reload(alice) // the "unclaimed" notification
+        loads[2].second.complete(listOf(mail(1)))
+        assertEquals(listOf(1L), ids())
+        assertTrue(newMail.isEmpty(), "a returned mail is not announced as new")
+    }
+
+    @Test
+    fun `reload of a player who is not online does nothing`() {
+        cache.reload(alice)
+        cache.gone(1, alice)
+        assertTrue(loads.isEmpty())
     }
 
     @Test

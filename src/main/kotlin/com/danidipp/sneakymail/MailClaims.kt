@@ -13,6 +13,9 @@ import java.util.logging.Logger
 /**
  * A player collecting a mail from the /mail GUI: checks on the server thread, the claim in the database, then the
  * rewards on the server thread. Rewards are handed out only when this server's claim statement returned them.
+ *
+ * Every claim logs a line before its statement and one after its redemption, so a crash in between can be found
+ * in the log and reconciled against `claimed_at`. [shutdown] settles the claims still in flight.
  */
 class MailClaims(
     private val plugin: Plugin,
@@ -20,6 +23,8 @@ class MailClaims(
     private val cache: MailCache,
     private val logger: Logger,
 ) {
+    private val inFlight = ClaimsInFlight()
+
     /**
      * Starts collecting mail [id] for [player] (server thread). False when the mail stays where it is: unknown, a claim
      * of it already running, an item reward that SneakyItems doesn't know, or not enough room for the items.
@@ -42,73 +47,136 @@ class MailClaims(
             return false
         }
         if (!cache.beginClaim(uuid, id)) return false
-        store.claim(id, uuid).whenComplete { rewards, error -> claimed(player, id, rewards, error) }
+        logger.info("Claiming mail $id for ${player.name} ($uuid)")
+        val claim = inFlight.start(id, uuid, player.name)
+        try {
+            store.claim(id, uuid).whenComplete { rewards, error ->
+                if (error != null) failed(claim, error) else finished(claim, rewards)
+            }
+        } catch (error: Exception) {
+            failed(claim, error)
+        }
         return true
     }
 
-    /** Runs on a SneakyDB thread. */
-    private fun claimed(player: Player, id: Long, rewards: List<MailReward>?, error: Throwable?) {
-        val uuid = player.uniqueId
-        val handOut = Runnable {
-            cache.endClaim(uuid, id)
-            when {
-                error != null -> {
-                    logger.warning("Could not claim mail $id for ${player.name}: ${error.javaClass.simpleName}")
-                    player.sendMessage(Component.text("An error occurred while collecting this mail. Please tell staff", NamedTextColor.RED))
-                }
-                rewards == null -> {
-                    cache.gone(id, uuid)
-                    player.sendMessage(Component.text("You have already collected this mail", NamedTextColor.RED))
-                }
-                else -> {
-                    // The same player object, or the new one when they left and came back meanwhile.
-                    val online = Bukkit.getPlayer(uuid)
-                    if (online == null) {
-                        undo(player, id)
-                    } else {
-                        cache.gone(id, uuid)
-                        give(online, id, rewards)
-                    }
-                }
+    /**
+     * Server thread, from onDisable while players are still online: hands out claims whose rewards are known, and
+     * reports claims whose statement is still running.
+     */
+    fun shutdown() {
+        val (running, claimed) = inFlight.shutdown()
+        for (claim in running) {
+            logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}): its claim was still running when SneakyMail " +
+                "stopped, so it may be claimed without its rewards. Staff: check claimed_at of mail ${claim.id}")
+        }
+        for (claim in claimed) deliver(claim, claim.rewards!!)
+    }
+
+    /** SneakyDB thread. */
+    private fun failed(claim: ClaimsInFlight.Claim, error: Throwable) {
+        val current = inFlight.failed(claim)
+        logger.severe("Claim of mail ${claim.id} for ${claim.name} (${claim.player}) failed (${error.javaClass.simpleName}); " +
+            "it may still have committed. Staff: check claimed_at of mail ${claim.id}")
+        if (!current) return
+        onServerThread {
+            cache.endClaim(claim.player, claim.id)
+            Bukkit.getPlayer(claim.player)?.sendMessage(
+                Component.text("An error occurred while collecting this mail. Please tell staff", NamedTextColor.RED))
+        }
+    }
+
+    /** SneakyDB thread. */
+    private fun finished(claim: ClaimsInFlight.Claim, rewards: List<MailReward>?) {
+        when (inFlight.finished(claim, rewards)) {
+            ClaimsInFlight.Outcome.NOTHING -> onServerThread {
+                cache.endClaim(claim.player, claim.id)
+                cache.gone(claim.id, claim.player)
+                Bukkit.getPlayer(claim.player)?.sendMessage(Component.text("You have already collected this mail", NamedTextColor.RED))
             }
+            // When this can't be scheduled the plugin is stopping, and shutdown() hands the rewards out.
+            ClaimsInFlight.Outcome.HAND_OUT -> onServerThread {
+                val taken = inFlight.take(claim) ?: return@onServerThread
+                cache.endClaim(claim.player, claim.id)
+                deliver(claim, taken)
+            }
+            ClaimsInFlight.Outcome.LATE_CLAIMED -> undo(claim, "its claim finished after SneakyMail stopped")
+            ClaimsInFlight.Outcome.LATE_NOTHING ->
+                logger.info("Mail ${claim.id} of ${claim.name}: the claim that was running at shutdown claimed nothing")
         }
+    }
+
+    private fun onServerThread(task: () -> Unit) {
         try {
-            if (!plugin.isEnabled) throw IllegalPluginAccessException("disabled")
-            Bukkit.getScheduler().runTask(plugin, handOut)
+            if (plugin.isEnabled) Bukkit.getScheduler().runTask(plugin, Runnable(task))
         } catch (_: IllegalPluginAccessException) {
-            if (error == null && rewards != null) undo(player, id)
+            // Disabled meanwhile.
         }
+    }
+
+    /** Server thread: the claim is this server's; hands out [rewards] or, when the player is gone, gives the mail back. */
+    private fun deliver(claim: ClaimsInFlight.Claim, rewards: List<MailReward>) {
+        // The same player object, or the new one when they left and came back meanwhile.
+        val player = Bukkit.getPlayer(claim.player)
+        if (player == null) {
+            undo(claim, "${claim.name} left before the rewards were handed out")
+            return
+        }
+        cache.gone(claim.id, claim.player)
+        give(player, claim.id, rewards)
     }
 
     /** The claim committed but nothing was handed out: give the mail back so the next join shows it again. */
-    private fun undo(player: Player, id: Long) {
-        logger.warning("Mail $id was claimed while ${player.name} left or the plugin stopped; returning it")
-        store.unclaim(id, player.uniqueId).whenComplete { _, error ->
-            if (error != null) logger.severe("Mail $id of ${player.name} (${player.uniqueId}) was claimed but not handed out; resend its rewards by hand")
+    private fun undo(claim: ClaimsInFlight.Claim, reason: String) {
+        logger.warning("Mail ${claim.id} of ${claim.name} (${claim.player}) was claimed but $reason; giving it back")
+        try {
+            store.unclaim(claim.id, claim.player).whenComplete { _, error -> if (error != null) undoFailed(claim) }
+        } catch (_: Exception) {
+            undoFailed(claim)
         }
     }
 
+    private fun undoFailed(claim: ClaimsInFlight.Claim) {
+        logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}) is claimed but its rewards were not handed out " +
+            "and it could not be given back. Staff: set claimed_at of mail ${claim.id} to null")
+    }
+
+    /** Hands out every reward; one that fails is logged and the rest still run. The claim is never undone here. */
     private fun give(player: Player, id: Long, rewards: List<MailReward>) {
-        for (reward in rewards) when (reward) {
-            is MailReward.CommandReward -> {
-                // Templates come from trusted senders: they run as console. The note is display text only.
-                val command = reward.command.replace("{player}", player.name)
-                logger.info("Redeeming ${player.name}'s mail $id with command: $command")
-                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command)
+        val failed = RewardItems.giveAll(rewards, { giveOne(player, id, it) }) { reward, error ->
+            // giveOne logs why it returned false; an exception is logged here.
+            if (error != null) logger.severe("Mail $id of ${player.name} (${player.uniqueId}): reward ${MailRewards.encode(reward)} " +
+                "failed (${error.javaClass.simpleName}: ${error.message}); give it by hand")
+        }
+        if (failed > 0) {
+            player.sendMessage(Component.text("Part of this mail could not be given. Please tell staff", NamedTextColor.RED))
+        }
+        logger.info("Redeemed mail $id for ${player.name} (${player.uniqueId}): ${rewards.size - failed} of ${rewards.size} rewards given")
+    }
+
+    private fun giveOne(player: Player, id: Long, reward: MailReward): Boolean = when (reward) {
+        is MailReward.CommandReward -> {
+            // Templates come from trusted senders: they run as console. The note is display text only.
+            val command = reward.command.replace("{player}", player.name)
+            logger.info("Redeeming ${player.name}'s mail $id with command: $command")
+            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command).also { ok ->
+                if (!ok) logger.severe("Mail $id of ${player.name} (${player.uniqueId}): reward ${MailRewards.encode(reward)} " +
+                    "failed (the command was not found or refused); give it by hand")
             }
-            is MailReward.ItemReward -> {
-                val item = SneakyItemsAPI.getByInternalName(reward.item)
-                val maxStack = item?.itemStack?.maxStackSize
-                if (item == null || maxStack == null) {
-                    logger.severe("Mail $id of ${player.name} was claimed, but item ${reward.item} x${reward.amount} no longer exists; give it by hand")
-                    player.sendMessage(Component.text("An item of this mail could not be given. Please tell staff", NamedTextColor.RED))
-                    continue
-                }
+        }
+        is MailReward.ItemReward -> {
+            val item = SneakyItemsAPI.getByInternalName(reward.item)
+            val maxStack = item?.itemStack?.maxStackSize
+            if (item == null || maxStack == null) {
+                logger.severe("Mail $id of ${player.name} (${player.uniqueId}): reward ${MailRewards.encode(reward)} failed " +
+                    "(SneakyItems no longer knows the item); give it by hand")
+                false
+            } else {
                 logger.info("Redeeming ${player.name}'s mail $id with item: ${reward.item} x${reward.amount}")
                 val stacks = RewardItems.stackAmounts(reward.amount, maxStack).mapNotNull { item.createFor(player, it) }
                 for (leftover in player.inventory.addItem(*stacks.toTypedArray()).values) {
                     player.world.dropItem(player.location, leftover).owner = player.uniqueId
                 }
+                true
             }
         }
     }

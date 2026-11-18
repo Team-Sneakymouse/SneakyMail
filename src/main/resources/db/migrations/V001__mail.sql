@@ -134,8 +134,9 @@ $$;
 
 -- Notifications on channel sneakymail, so servers show mail inserted anywhere (DBeaver included) without a restart:
 --   {"event":"new","id":<id>,"recipient":"<uuid>"}      after an insert
---   {"event":"claimed","id":<id>,"recipient":"<uuid>"}  when claimed_at goes from null to a value
---   {"event":"deleted","id":<id>,"recipient":"<uuid>"}  after a delete
+--   {"event":"claimed","id":<id>,"recipient":"<uuid>"}    when claimed_at goes from null to a value
+--   {"event":"unclaimed","id":<id>,"recipient":"<uuid>"}  when claimed_at goes from a value back to null
+--   {"event":"deleted","id":<id>,"recipient":"<uuid>"}    after a delete
 create function sneakymail.mail_notify() returns trigger
 language plpgsql
 set search_path = pg_catalog, pg_temp
@@ -148,10 +149,13 @@ begin
         row_event := 'new';
         changed := new;
     elsif tg_op = 'UPDATE' then
-        if old.claimed_at is not null or new.claimed_at is null then
+        if old.claimed_at is null and new.claimed_at is not null then
+            row_event := 'claimed';
+        elsif old.claimed_at is not null and new.claimed_at is null then
+            row_event := 'unclaimed';
+        else
             return null;
         end if;
-        row_event := 'claimed';
         changed := new;
     else
         row_event := 'deleted';

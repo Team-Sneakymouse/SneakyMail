@@ -14,9 +14,9 @@ with a new script and with those callers.
 |---|---|
 | `sneakymail.mail` | `id`, `source_key` (unique, optional), `recipient_uuid`, `sender_name`, `note`, `rewards` (jsonb), `created_at`, `expires_at`, `claimed_at` (null until claimed) |
 | `sneakymail.rewards_valid(jsonb)` | The table's check: a JSON array of `{"type":"command","command":"..."}` and `{"type":"item","item":"<SneakyItems internal name>","amount":1..2304}`, no other keys. `[]` is valid |
-| `sneakymail.send(source_key, recipient, sender_name, note, rewards, expires_at default null)` | Inserts and returns the id. With a source key it is idempotent: the same key with the same recipient, sender, note, rewards and expiry returns the first mail's id, also for concurrent calls; different content raises SQLSTATE `23505`. A null note becomes `''`. `security definer`; EXECUTE is revoked from PUBLIC, an operator grants it |
+| `sneakymail.send(source_key, recipient, sender_name, note, rewards, expires_at default null)` | Inserts and returns the id. With a source key it is idempotent: the same key with the same recipient, sender, note, rewards and expiry returns the first mail's id, also for concurrent calls; different content raises SQLSTATE `23505`. A null note becomes `''`. `security definer`; EXECUTE is revoked from PUBLIC, an operator grants it. A source key is remembered only while its row exists, so never delete claimed mail rows |
 | `sneakymail.delete_expired()` | Deletes unclaimed mail whose `expires_at` has passed and returns the count. pg_cron runs it every 10 minutes as the plugin's role (scheduled by an operator) |
-| trigger `mail_notify` | `pg_notify('sneakymail', ...)` with `{"event":"new","id":<id>,"recipient":"<uuid>"}` after an insert, `"claimed"` when `claimed_at` goes from null to a value, `"deleted"` after a delete |
+| trigger `mail_notify` | `pg_notify('sneakymail', ...)` with `{"event":"new","id":<id>,"recipient":"<uuid>"}` after an insert, `"claimed"` when `claimed_at` goes from null to a value, `"unclaimed"` when it goes from a value back to null, `"deleted"` after a delete (same payload shape for all four) |
 
 Rewards:
 
@@ -31,9 +31,11 @@ or a plain insert. Either shows up in game at once for an online recipient.
 
 ## The plugin
 
-- **Cache:** only online players' unclaimed mail, loaded when they join and dropped when they quit (`MailCache`). The
-  subscription to channel `sneakymail` reloads a player on `new` and drops a mail on `claimed` and `deleted`; when it
-  (re)connects, every online player is reloaded, because notifications sent while it was down are lost.
+- **Cache:** only online players' unclaimed mail, loaded when they join and dropped when they quit (`MailCache`). Every
+  notification on channel `sneakymail` reloads the recipient from the database (`claimed` and `deleted` also drop the
+  mail at once); when the subscription (re)connects, every online player is reloaded, because notifications sent while
+  it was down are lost. A load that was running while a mail was claimed can't bring that mail back; the load after
+  it decides, so a mail given back (`unclaimed`) shows up again.
   Notification and database callbacks run off the server thread and are rescheduled onto it.
 - **Claiming** (`MailClaims`): on the server thread SneakyMail checks that SneakyItems knows every item reward and
   that the player's inventory has room for all of them; otherwise the mail stays and the player is told to tell staff
@@ -44,9 +46,19 @@ or a plain insert. Either shows up in game at once for an online recipient.
   ```
 
   Rewards are handed out only when a row comes back ("already collected" otherwise), in their order, on the server
-  thread. Items that no longer fit drop at the player's feet. Each reward is logged (`Redeeming <player>'s mail <id>
-  with command: ...` / `with item: ...`). If the player left or the plugin stopped before the rewards could be
-  handed out, the claim is undone so the mail shows again at the next join.
+  thread. Items that no longer fit drop at the player's feet. A reward that throws, a command that `dispatchCommand`
+  refuses, or an item SneakyItems no longer knows is logged SEVERE with the mail id, the player and that reward's
+  JSON, and the remaining rewards still run; a claim is never undone once any reward was given.
+- **Logs to reconcile a crash:** `Claiming mail <id> for <player> (<uuid>)` before each claim statement, `Redeeming
+  <player>'s mail <id> with command: ...` / `with item: ...` per reward, and `Redeemed mail <id> for <player> (<uuid>):
+  <n> of <m> rewards given` after it. A `Claiming` line without its `Redeemed` line means: check that mail's
+  `claimed_at` and give its rewards by hand if it is set. No crash bookkeeping is kept in the database.
+- **Claims at shutdown and when the player leaves:** if the player left before the rewards were handed out, the claim
+  is undone (`claimed_at` back to null, which sends `unclaimed`) so the mail shows again. On disable (players are
+  still online then) a claim whose rewards are known but not yet handed out is handed out at once, or undone when the
+  player is gone; a claim whose statement is still running is logged SEVERE with the mail id and uuid (it may have
+  been claimed without its rewards: staff check `claimed_at`); if it then claims after all, it is given back. A failed
+  claim statement is logged SEVERE too, since it may still have committed.
 - **`expires_at` is ignored by the plugin**: expired mail that the sweep hasn't deleted yet can still be claimed.
 - **Hooks kept for other plugins:** `NewMailEvent` (its `record` is a `MailRecord`) for new mail to an online
   recipient; the console cast `ms cast as <player> purchase-newmail` on new mail and on join with unread mail;
@@ -87,11 +99,17 @@ publishing the plugin publishes the API with the same commit-derived version fir
 
 `tools/import_pocketbase.py` copies `lom2_mail` into the empty table once, at the cutover; its docstring has the
 rules (skipped expired lootbox mail, recipients by name, `ms magicitem` to item rewards, source keys from the old
-journal) and how to run it. Run it with `--dry-run` first and read the report. The old journal table
+journal) and how to run it. Run it with `--dry-run` first and read the report. It refuses to commit (also as the
+dry run's verdict) when a journal-keyed row differs from its journal payload, when an unclaimed mail would still be
+invalid, or when journal keys would be lost or journal rows are unconfirmed; the last two can be accepted with
+`--accept-lost-journal-keys` and `--accept-unconfirmed-journal-rows`. The old journal table
 `sneakymail.command_requests` stays until a later script drops it; the plugin no longer reads it.
 
-Operator steps per database: the schema `sneakymail` exists already; grant EXECUTE on `sneakymail.send` to the
-roles that send mail (n8n's); schedule `select sneakymail.delete_expired()` every 10 minutes as the plugin's role.
+Operator steps per database: the schema `sneakymail` exists already; for each role that sends mail (n8n's),
+`grant usage on schema sneakymail to <role>;` and then
+`grant execute on function sneakymail.send(text, uuid, text, text, jsonb, timestamptz) to <role>;`; schedule
+`select sneakymail.delete_expired()` every 10 minutes as the plugin's role. A source key is remembered only while its
+row exists, so never delete claimed mail rows (the sweep deletes only unclaimed, expired mail).
 
 ## Tests
 

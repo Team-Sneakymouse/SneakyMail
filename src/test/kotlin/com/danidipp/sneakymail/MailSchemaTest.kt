@@ -319,7 +319,7 @@ class MailSchemaTest {
     }
 
     @Test
-    fun `the trigger notifies new, claimed and deleted mail`() {
+    fun `the trigger notifies new, claimed, unclaimed and deleted mail`() {
         connect().use { listener ->
             listener.createStatement().use { it.execute("listen sneakymail") }
             val pg = listener.unwrap(PGConnection::class.java)
@@ -338,8 +338,12 @@ class MailSchemaTest {
             assertEquals(listOf("""{"event":"claimed","id":$id,"recipient":"$alice"}"""), received())
 
             exec("update sneakymail.mail set claimed_at = now() where id = ?", id)
+            assertEquals(emptyList(), received(), "claimed again: nothing")
+
             store.unclaim(id, alice).join()
-            assertEquals(emptyList(), received(), "claimed again or unclaimed: nothing")
+            assertEquals(listOf("""{"event":"unclaimed","id":$id,"recipient":"$alice"}"""), received())
+            store.claim(id, alice).join()
+            assertEquals(listOf("""{"event":"claimed","id":$id,"recipient":"$alice"}"""), received())
 
             exec("delete from sneakymail.mail where id = ?", id)
             assertEquals(listOf("""{"event":"deleted","id":$id,"recipient":"$alice"}"""), received())

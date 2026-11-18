@@ -8,7 +8,7 @@ import java.util.UUID
 
 /** A notification on channel `sneakymail`, sent by the trigger in db/migrations/V001__mail.sql. */
 data class MailNotification(val event: Event, val id: Long, val recipient: UUID) {
-    enum class Event { NEW, CLAIMED, DELETED }
+    enum class Event { NEW, CLAIMED, UNCLAIMED, DELETED }
 
     companion object {
         /** Null for a payload that isn't one of the trigger's. */
@@ -17,6 +17,7 @@ data class MailNotification(val event: Event, val id: Long, val recipient: UUID)
             val event = when (json.getValue("event").jsonPrimitive.content) {
                 "new" -> Event.NEW
                 "claimed" -> Event.CLAIMED
+                "unclaimed" -> Event.UNCLAIMED
                 "deleted" -> Event.DELETED
                 else -> null
             }
