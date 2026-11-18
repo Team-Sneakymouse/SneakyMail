@@ -59,25 +59,16 @@ class ImportAgainstPostgres(unittest.TestCase):
         self.conn.close()
         self.db.close()
 
-    def journal_table(self):
-        self.db.execute("CREATE TABLE sneakymail.command_requests (source_key text PRIMARY KEY, request_id text NOT NULL UNIQUE,"
-                        " payload jsonb NOT NULL, confirmed_at timestamptz)")
-
     def test_imports_into_the_v001_table_and_reads_back_what_it_planned(self):
-        self.journal_table()
-        payload = '{"recipient_uuid": "%s", "sender_name": "Jimmy The Rat", "note": "line one\\nline two", "command": "say {player}"}' % ALICE
-        self.db.execute("INSERT INTO sneakymail.command_requests VALUES ('lomphone:1', 'phone', %s::jsonb, now())", (payload,))
-        accounts, journal = prepare(self.cur)
+        accounts = prepare(self.cur)
         self.assertEqual({"bob": [BOB]}, accounts)
-        self.assertEqual({"phone"}, set(journal))
         plan = build_plan([
             record("claimed", available=False, rewards=[cmd("ms magicitem item-EXP 3 {player}"), cmd(f"lootbox {{player}} 1893456000000 4")]),
             record("by-name", recipient="", name="bob", rewards=[]),
             record("shop", source_key="shop_1"),
-            record("phone"),
+            record("phone", source_key="lomphone:1"),
             record("nobody", recipient="", name="nobody"),
-        ], accounts, journal, {"item-EXP"}, NOW)
-        self.assertEqual([], plan.journal_mismatches)
+        ], accounts, {"item-EXP"}, NOW)
         self.assertEqual([], refusals(plan))
         found = write(self.cur, plan)
         self.assertEqual(expected(plan), found)
@@ -94,15 +85,11 @@ class ImportAgainstPostgres(unittest.TestCase):
                           datetime(2026, 1, 2, 3, 4, 5, 678000, tzinfo=timezone.utc),
                           datetime(2030, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 3, tzinfo=timezone.utc)), rows[1])
         self.assertEqual(["lomphone:1", "shop_1"], [rows[2][0], rows[3][0]])
-        # The journal's payload, sent again by lom-phone-app, finds the imported mail.
+        # A sender retrying an imported key with the same content gets the imported mail back.
         mail_id = self.db.execute("SELECT id FROM sneakymail.mail WHERE source_key = 'lomphone:1'").fetchone()[0]
         again = self.db.execute("SELECT sneakymail.send('lomphone:1', %s, 'Jimmy The Rat', %s, %s::jsonb)",
                                 (ALICE, "line one\nline two", '[{"type":"command","command":"say {player}"}]')).fetchone()[0]
         self.assertEqual(mail_id, again)
-
-    def test_without_a_journal_table(self):
-        accounts, journal = prepare(self.cur)
-        self.assertIsNone(journal)
 
     def test_refuses_a_table_that_holds_mail(self):
         self.db.execute("INSERT INTO sneakymail.mail (recipient_uuid, sender_name) VALUES (%s, 'Staff')", (ALICE,))

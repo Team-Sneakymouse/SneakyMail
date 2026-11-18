@@ -8,7 +8,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from import_pocketbase import (JournalRow, build_plan, convert_command, expected, lootbox_expiry, magic_item_names,
+from import_pocketbase import (build_plan, convert_command, expected, lootbox_expiry, magic_item_names,
                                magicspells_items, parse_uuid, refusals, reward_valid, strip_extra_keys)
 
 NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
@@ -32,8 +32,8 @@ def record(pb_id="rec000000000001", recipient=ALICE, name="", available=True, re
             "source_key": source_key, "created": created, "updated": updated}
 
 
-def plan_of(*records, accounts=None, journal=None, known=frozenset({"item-EXP", "item-glue"})):
-    return build_plan(list(records), accounts or {}, journal, set(known), NOW)
+def plan_of(*records, accounts=None, known=frozenset({"item-EXP", "item-glue"})):
+    return build_plan(list(records), accounts or {}, set(known), NOW)
 
 
 class Conversion(unittest.TestCase):
@@ -190,98 +190,16 @@ class Plan(unittest.TestCase):
         self.assertEqual([], refusals(plan))
 
     def test_two_records_with_one_key_refuse_the_import(self):
-        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
-        # PocketBase's unique index stops two records with one key of their own; a journal key can still collide.
-        plan = plan_of(record("a", source_key="lomphone:1"), record("b"), journal={"b": JournalRow("lomphone:1", payload, True)})
-        self.assertEqual({"a": "lomphone:1", "b": "lomphone:1"}, {row.pb_id: row.source_key for row in plan.rows},
-                         "no key is dropped to get past uniqueness")
-        self.assertEqual(["b: key 'lomphone:1' is also on a"], plan.duplicate_keys)
-        self.assertIn("1 records would carry a source key another record already carries",
-                      refusals(plan, accept_lost_keys=True, accept_unconfirmed=True))
+        # PocketBase's unique index should make this impossible; if it happens, no key is dropped to get past it.
+        plan = plan_of(record("a", source_key="shop_1"), record("b", source_key="shop_1", created="2026-02-01 00:00:00.000Z"))
+        self.assertEqual({"a": "shop_1", "b": "shop_1"}, {row.pb_id: row.source_key for row in plan.rows})
+        self.assertEqual(["b: key 'shop_1' is also on a"], plan.duplicate_keys)
+        self.assertEqual(["1 records would carry a source key another record already carries"], refusals(plan))
 
     def test_a_key_the_table_cannot_hold_refuses_the_import(self):
         plan = plan_of(record("a", source_key="k" * 513), record("b", source_key="k" * 512))
         self.assertEqual(["a: source key of 513 characters (the table takes 1 to 512)"], plan.invalid_keys)
         self.assertEqual(["1 records carry a source key the table can't hold"], refusals(plan))
-
-    def test_source_keys_from_the_journal(self):
-        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
-        journal = {
-            "matching": JournalRow("lomphone:1", payload, True),
-            "changed": JournalRow("lomphone:2", {**payload, "note": "Other", "command": "say other"}, True),
-            "own-key": JournalRow("lomphone:3", payload, True),
-            "skipped": JournalRow("lomphone:4", payload, False),
-            "gone": JournalRow("lomphone:5", payload, True),
-            "converted": JournalRow("lomphone:6", {**payload, "command": "ms magicitem item-EXP {player}"}, True),
-            "lootbox": JournalRow("lomphone:7", {**payload, "command": f"lootbox {{player}} {FUTURE_MS}"}, True),
-        }
-        plan = plan_of(
-            record("matching"), record("changed"), record("own-key", source_key="lomphone:other"),
-            record("skipped", recipient="", name="nobody"),
-            record("converted", rewards=[cmd("ms magicitem item-EXP {player}")]),
-            record("lootbox", rewards=[cmd(f"lootbox {{player}} {FUTURE_MS}")]),
-            record("no-entry", rewards=[cmd("ms magicitem item-EXP {player}")]),
-            journal=journal,
-        )
-        self.assertEqual({"matching": "lomphone:1", "changed": "lomphone:2", "own-key": "lomphone:other",
-                          "converted": "lomphone:6", "lootbox": "lomphone:7", "no-entry": None},
-                         {row.pb_id: row.source_key for row in plan.rows})
-        rows = {row.pb_id: row for row in plan.rows}
-        # Journal-keyed rows keep the admitted command and no expiry, so a retry with the same arguments matches send().
-        self.assertEqual([cmd("ms magicitem item-EXP {player}")], rows["converted"].rewards)
-        self.assertEqual(([cmd(f"lootbox {{player}} {FUTURE_MS}")], None), (rows["lootbox"].rewards, rows["lootbox"].expires_at))
-        self.assertEqual([{"type": "item", "item": "item-EXP", "amount": 1}], rows["no-entry"].rewards)
-        self.assertEqual(["changed (key lomphone:2): note, rewards differ from the journal"], plan.journal_mismatches)
-        self.assertEqual(["gone (key lomphone:5): its PocketBase record is gone",
-                          "own-key (key lomphone:3): its record carries another source key",
-                          "skipped (key lomphone:4): its record is not imported"], plan.journal_unmatched)
-        self.assertEqual(["skipped (key lomphone:4)"], plan.journal_unconfirmed)
-        self.assertEqual(4, plan.counts["source keys from the journal"])
-        self.assertEqual(["own-key: carries key lomphone:other, but the journal gives it key lomphone:3"], plan.journal_conflicts)
-        self.assertEqual(4, len(refusals(plan)))
-        self.assertEqual(["1 journal-keyed rows differ from their journal payload",
-                          "1 records carry a source key the journal pairs differently"],
-                         refusals(plan, accept_lost_keys=True, accept_unconfirmed=True), "mismatches and conflicts are never accepted")
-
-    def test_a_record_carrying_its_journal_key_itself_is_checked_and_kept_exact(self):
-        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello",
-                   "command": "ms magicitem item-EXP {player}"}
-        journal = {"self-keyed": JournalRow("lomphone:1", payload, True),
-                   "changed": JournalRow("lomphone:2", payload, True),
-                   "elsewhere": JournalRow("lomphone:3", payload, True)}
-        plan = plan_of(
-            record("self-keyed", source_key="lomphone:1", rewards=[cmd("ms magicitem item-EXP {player}")]),
-            record("changed", source_key="lomphone:2", recipient=BOB, rewards=[cmd(f"lootbox {{player}} {FUTURE_MS}")]),
-            record("thief", source_key="lomphone:3", rewards=[cmd("ms magicitem item-EXP {player}")]),
-            journal=journal,
-        )
-        rows = {row.pb_id: row for row in plan.rows}
-        self.assertEqual(([cmd("ms magicitem item-EXP {player}")], None, "lomphone:1"),
-                         (rows["self-keyed"].rewards, rows["self-keyed"].expires_at, rows["self-keyed"].source_key))
-        self.assertIsNone(rows["changed"].expires_at, "a journal key never gets an expiry")
-        self.assertEqual(["changed (key lomphone:2): recipient, rewards differ from the journal"], plan.journal_mismatches)
-        self.assertEqual(["thief: carries key lomphone:3, which the journal gives to request elsewhere"], plan.journal_conflicts)
-        self.assertEqual([{"type": "item", "item": "item-EXP", "amount": 1}], rows["thief"].rewards,
-                         "a conflicting record is not treated as the journal's")
-        self.assertEqual(2, plan.counts["source keys of their own that are in the journal"])
-        self.assertEqual(2, len(refusals(plan, accept_lost_keys=True, accept_unconfirmed=True)))
-
-    def test_refusals_for_journal_keys_can_be_accepted_by_naming_the_outcome(self):
-        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
-        plan = plan_of(record("kept"), journal={"kept": JournalRow("k1", payload, False), "gone": JournalRow("k2", payload, True)})
-        self.assertEqual([], plan.journal_mismatches)
-        reasons = refusals(plan)
-        self.assertEqual(2, len(reasons))
-        self.assertIn("--accept-lost-journal-keys", reasons[0])
-        self.assertIn("--accept-unconfirmed-journal-rows", reasons[1])
-        self.assertEqual(1, len(refusals(plan, accept_lost_keys=True)))
-        self.assertEqual(1, len(refusals(plan, accept_unconfirmed=True)))
-        self.assertEqual([], refusals(plan, accept_lost_keys=True, accept_unconfirmed=True))
-
-    def test_without_a_journal_records_keep_only_their_own_keys(self):
-        plan = plan_of(record("a"), journal=None)
-        self.assertIsNone(plan.rows[0].source_key)
-        self.assertEqual([], plan.journal_unmatched)
 
     def test_rows_follow_creation_order_and_expected_counts(self):
         plan = plan_of(

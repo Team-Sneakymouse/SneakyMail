@@ -9,8 +9,7 @@ so it can't import twice.
         --pocketbase-env <file with POCKETBASE_HOST, POCKETBASE_USERNAME, POCKETBASE_PASSWORD> \\
         --pg-env <file with PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD> \\
         --magicspells-data <MagicSpells-Data checkout, branch the server runs> \\
-        [--items-file <another plugin's magic-items.yml>]... [--dry-run] \\
-        [--accept-lost-journal-keys] [--accept-unconfirmed-journal-rows]
+        [--items-file <another plugin's magic-items.yml>]... [--dry-run]
 
 Without the two env files it reads the same variables from the environment. Everything is written in one transaction
 that holds an exclusive lock on sneakymail.mail; --dry-run rolls it back after printing what it would have done.
@@ -29,21 +28,13 @@ Rules (decided by the project owner, 2026-11-18):
   the same internal names, so the name stays as it is. Names that no definition in --magicspells-data (loaded the
   way MagicSpells loads them) or an --items-file has are listed; they still convert. Other commands stay commands.
 - Keys of a reward that the old plugin ignored (it decoded with ignoreUnknownKeys) are stripped and counted.
-- source_key: the record's own source_key when it has one; otherwise, if sneakymail.command_requests exists, the
-  source_key of the journal row whose request_id is the record's id. A row whose key is in the journal, wherever the
-  key came from, keeps the admitted payload exactly (its command is not converted, expires_at stays null), because
-  lom-phone-app retries an old key with the journal's payload and sneakymail.send compares it.
+- source_key: the record's own source_key, exactly as PocketBase has it (no trimming); only an empty key means none.
+  The old journal sneakymail.command_requests is not read (lom-phone-app retries no old key); an operator drops it.
 
-It refuses to commit, in a dry run too (exit code 1), when:
-- a journal-keyed row still differs from its journal payload (recipient, sender, note, the single command);
-- a record's own source key and the journal disagree (the journal gives the record another key, or the key to
-  another record);
-- a journal key ends up on no imported row (record gone, skipped or carrying another key), unless
-  --accept-lost-journal-keys accepts that a retry of those keys sends the mail again;
-- a journal row was never confirmed, unless --accept-unconfirmed-journal-rows accepts that its mail is not sent again;
+It refuses to commit, in a dry run too (exit code 1, nothing written), when:
 - an unclaimed mail has rewards that are still invalid, or a lootbox number that is no time;
-- two records would carry the same source key, or a key is not 1 to 512 characters long. Keys are imported exactly
-  as PocketBase has them (no trimming); only an empty key counts as no key.
+- two records would carry the same source key (PocketBase's unique index should make that impossible), or a key is
+  not 1 to 512 characters long.
 Claimed mail with invalid rewards is skipped and listed; claimed mail with a lootbox number that is no time is
 imported without expires_at and listed.
 
@@ -209,10 +200,6 @@ class Plan:
     unknown_items: Counter = field(default_factory=Counter)  # converted names without a definition: rewards
     unknown_items_unclaimed: Counter = field(default_factory=Counter)
     kept_magicitem_commands: Counter = field(default_factory=Counter)  # `ms magicitem` commands that stay commands
-    journal_mismatches: list[str] = field(default_factory=list)  # refuse
-    journal_conflicts: list[str] = field(default_factory=list)  # a key and a record the journal doesn't pair: refuse
-    journal_unmatched: list[str] = field(default_factory=list)  # journal keys no imported row carries: refuse
-    journal_unconfirmed: list[str] = field(default_factory=list)  # refuse
     duplicate_keys: list[str] = field(default_factory=list)  # two records with one key: refuse
     invalid_keys: list[str] = field(default_factory=list)  # keys the table can't hold: refuse
     invalid: list[str] = field(default_factory=list)  # claimed mail, skipped
@@ -220,13 +207,6 @@ class Plan:
     bad_times: list[str] = field(default_factory=list)  # lootbox numbers that are no time
     bad_times_unclaimed: list[str] = field(default_factory=list)  # refuse
     unresolved_names: Counter = field(default_factory=Counter)
-
-
-@dataclass(frozen=True)
-class JournalRow:
-    source_key: str
-    payload: dict
-    confirmed: bool
 
 
 def strip_extra_keys(reward):
@@ -238,18 +218,15 @@ def strip_extra_keys(reward):
     return reward, False
 
 
-def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dict[str, JournalRow] | None,
-               known_items: set[str], now: datetime) -> Plan:
+def build_plan(records: list[dict], accounts: dict[str, list[str]], known_items: set[str], now: datetime) -> Plan:
     """Turns PocketBase records into rows to insert. Pure: no database, no network.
 
-    accounts maps lower(name) to the account UUIDs with that name; journal maps request_id to its row, or is None
-    when sneakymail.command_requests doesn't exist. What would make the import wrong goes into the plan's refusal
-    lists; refusals() turns them into reasons not to commit.
+    accounts maps lower(name) to the account UUIDs with that name. What would make the import wrong goes into the
+    plan's refusal lists; refusals() turns them into reasons not to commit.
     """
     plan = Plan()
     counts = plan.counts
     used_keys: dict[str, str] = {}
-    journal_by_key = {entry.source_key: request_id for request_id, entry in (journal or {}).items()}
     for record in sorted(records, key=lambda r: (r.get("created") or "", r["id"])):
         counts["records"] += 1
         available = bool(record.get("available"))
@@ -268,23 +245,9 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
             counts["rewards with extra keys, stripped"] += extra
             stripped.append(reward)
 
-        # A row whose key is in the journal, wherever the key came from, keeps exactly what lom-phone-app was told was
-        # admitted: send() compares a retry with it.
         # Kept exactly as PocketBase has it (its unique index covers every key but ''): only '' means no key.
         raw_key = record.get("source_key")
-        own_key = raw_key if isinstance(raw_key, str) and raw_key != "" else None
-        entry = None
-        if journal is not None:
-            by_id = journal.get(record["id"])
-            keyed_request = journal_by_key.get(own_key) if own_key is not None else None
-            if own_key is not None and by_id is not None and by_id.source_key != own_key:
-                plan.journal_conflicts.append(f"{record['id']}: carries key {own_key}, but the journal gives it key "
-                                              f"{by_id.source_key}")
-            elif keyed_request is not None and keyed_request != record["id"]:
-                plan.journal_conflicts.append(f"{record['id']}: carries key {own_key}, which the journal gives to "
-                                              f"request {keyed_request}")
-            else:
-                entry = by_id if by_id is not None else (journal[keyed_request] if keyed_request is not None else None)
+        key = raw_key if isinstance(raw_key, str) and raw_key != "" else None
 
         # Lootbox expiry: the earliest time among the mail's lootbox commands.
         expiry = None
@@ -302,13 +265,11 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
         if available and expiry is not None and expiry < now:
             counts["skipped: unclaimed lootbox mail past its time"] += 1
             continue
-        if entry is not None:
-            expiry = None
 
         rewards = []
         for reward in stripped:
-            if entry is None and isinstance(reward, dict) and set(reward) == {"type", "command"} \
-                    and reward["type"] == "command" and isinstance(reward["command"], str):
+            if isinstance(reward, dict) and set(reward) == {"type", "command"} and reward["type"] == "command" \
+                    and isinstance(reward["command"], str):
                 reward = convert_command(reward["command"])
                 if reward["type"] == "command" and MAGICITEM_ANY.match(reward["command"].strip()):
                     plan.kept_magicitem_commands[reward["command"]] += 1
@@ -337,22 +298,8 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
 
         note = record.get("note") or ""
         sender = record.get("sender_name") or ""
-        key = own_key
         if key is not None:
-            counts["source keys of their own"] += 1
-        if entry is not None:
-            if key is None:
-                key = entry.source_key
-                counts["source keys from the journal"] += 1
-            else:
-                counts["source keys of their own that are in the journal"] += 1
-            payload = entry.payload
-            wanted = {"recipient": payload.get("recipient_uuid"), "sender": payload.get("sender_name"),
-                      "note": payload.get("note"), "rewards": [{"type": "command", "command": payload.get("command")}]}
-            have = {"recipient": recipient, "sender": sender, "note": note, "rewards": rewards}
-            differ = [name for name in wanted if wanted[name] != have[name]]
-            if differ:
-                plan.journal_mismatches.append(f"{record['id']} (key {key}): {', '.join(differ)} differ from the journal")
+            counts["source keys"] += 1
         if key is not None and not 1 <= len(key) <= 512:
             plan.invalid_keys.append(f"{record['id']}: source key of {len(key)} characters (the table takes 1 to 512)")
         if key is not None:
@@ -377,45 +324,16 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
             claimed_at=None if available else parse_time(record["updated"]),
         ))
 
-    if journal is not None:
-        imported = {row.source_key for row in plan.rows}
-        by_id = {record["id"]: record for record in records}
-        for request_id, entry in sorted(journal.items()):
-            if entry.source_key in imported:
-                continue
-            if request_id not in by_id:
-                reason = "its PocketBase record is gone"
-            elif (by_id[request_id].get("source_key") or "").strip():
-                reason = "its record carries another source key"
-            else:
-                reason = "its record is not imported"
-            plan.journal_unmatched.append(f"{request_id} (key {entry.source_key}): {reason}")
-        plan.journal_unconfirmed = sorted(f"{request_id} (key {entry.source_key})"
-                                          for request_id, entry in journal.items() if not entry.confirmed)
     return plan
 
 
-ACCEPT_LOST = "--accept-lost-journal-keys"
-ACCEPT_UNCONFIRMED = "--accept-unconfirmed-journal-rows"
-
-
-def refusals(plan: Plan, accept_lost_keys: bool = False, accept_unconfirmed: bool = False) -> list[str]:
-    """Why the import must not commit (empty: it may). Two of them can be accepted by naming the outcome."""
+def refusals(plan: Plan) -> list[str]:
+    """Why the import must not commit (empty: it may)."""
     reasons = []
-    if plan.journal_mismatches:
-        reasons.append(f"{len(plan.journal_mismatches)} journal-keyed rows differ from their journal payload")
-    if plan.journal_conflicts:
-        reasons.append(f"{len(plan.journal_conflicts)} records carry a source key the journal pairs differently")
     if plan.duplicate_keys:
         reasons.append(f"{len(plan.duplicate_keys)} records would carry a source key another record already carries")
     if plan.invalid_keys:
         reasons.append(f"{len(plan.invalid_keys)} records carry a source key the table can't hold")
-    if plan.journal_unmatched and not accept_lost_keys:
-        reasons.append(f"{len(plan.journal_unmatched)} journal keys would not be imported, so a lom-phone-app retry "
-                       f"would send that mail again (accept that with {ACCEPT_LOST})")
-    if plan.journal_unconfirmed and not accept_unconfirmed:
-        reasons.append(f"{len(plan.journal_unconfirmed)} journal rows were never confirmed, so their mail may never have "
-                       f"reached PocketBase and is not sent again (accept that with {ACCEPT_UNCONFIRMED})")
     if plan.invalid_unclaimed:
         reasons.append(f"{len(plan.invalid_unclaimed)} unclaimed mails have rewards that are still invalid")
     if plan.bad_times_unclaimed:
@@ -490,8 +408,8 @@ class Refused(Exception):
     """The database is not in the state this script writes to. Nothing is written."""
 
 
-def prepare(cur) -> tuple[dict[str, list[str]], dict[str, JournalRow] | None]:
-    """Checks and locks the target on an open transaction; returns the account names and the journal."""
+def prepare(cur) -> dict[str, list[str]]:
+    """Checks and locks the target on an open transaction; returns lower(name) -> account UUIDs."""
     cur.execute("SELECT to_regclass('sneakydb.schema_migrations') IS NOT NULL, to_regclass('sneakymail.mail') IS NOT NULL")
     has_versions, has_mail = cur.fetchone()
     version = None
@@ -514,14 +432,7 @@ def prepare(cur) -> tuple[dict[str, list[str]], dict[str, JournalRow] | None]:
     accounts: dict[str, list[str]] = {}
     for name, account in cur.fetchall():
         accounts.setdefault(name, []).append(account)
-
-    cur.execute("SELECT to_regclass('sneakymail.command_requests') IS NOT NULL")
-    if not cur.fetchone()[0]:
-        return accounts, None
-    cur.execute("SELECT request_id, source_key, payload, confirmed_at IS NOT NULL FROM sneakymail.command_requests")
-    journal = {request_id: JournalRow(source_key, payload if isinstance(payload, dict) else json.loads(payload), confirmed)
-               for request_id, source_key, payload, confirmed in cur.fetchall()}
-    return accounts, journal
+    return accounts
 
 
 INSERT = """
@@ -569,10 +480,6 @@ def report(plan: Plan) -> None:
         print(f"recipients skipped because their name didn't resolve: {len(plan.unresolved_names)} names, "
               f"{sum(plan.unresolved_names.values())} mails")
     for title, lines in (
-        ("JOURNAL MISMATCH (lom-phone-app retrying these keys gets 'different payload')", plan.journal_mismatches),
-        ("JOURNAL CONFLICT (a record's own key and the journal disagree)", plan.journal_conflicts),
-        ("journal keys not imported (lom-phone-app retrying them would send the mail again)", plan.journal_unmatched),
-        ("journal rows never confirmed (their mail may never have reached PocketBase)", plan.journal_unconfirmed),
         ("UNCLAIMED MAIL WITH INVALID REWARDS", plan.invalid_unclaimed),
         ("UNCLAIMED MAIL WITH A LOOTBOX NUMBER THAT IS NO TIME", plan.bad_times_unclaimed),
         ("claimed mail with a lootbox number that is no time (imported without expires_at)", plan.bad_times),
@@ -595,10 +502,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--items-file", action="append", default=[], type=Path,
                         help="another plugin's magic-items YAML that SneakyItems registers (repeatable)")
     parser.add_argument("--dry-run", action="store_true", help="do everything, then roll back")
-    parser.add_argument(ACCEPT_LOST, action="store_true",
-                        help="commit although some journal keys are not imported: a lom-phone-app retry of them sends the mail again")
-    parser.add_argument(ACCEPT_UNCONFIRMED, action="store_true",
-                        help="commit although some journal rows were never confirmed: their mail is not sent again")
     args = parser.parse_args(argv)
 
     import psycopg  # here, so the planning code and its tests need nothing installed
@@ -623,17 +526,16 @@ def main(argv: list[str] | None = None) -> int:
         cur.execute("SELECT current_database(), current_user, now()")
         database, role, now = cur.fetchone()
         try:
-            accounts, journal = prepare(cur)
+            accounts = prepare(cur)
         except Refused as refused:
             connection.rollback()
             print(f"REFUSED, nothing written ({database}): {refused}")
             return 1
-        print(f"{database} as {role}: {sum(len(v) for v in accounts.values())} accounts, journal "
-              + ("absent" if journal is None else f"{len(journal)} rows"))
+        print(f"{database} as {role}: {sum(len(v) for v in accounts.values())} accounts")
 
-        plan = build_plan(records, accounts, journal, known_items, now)
+        plan = build_plan(records, accounts, known_items, now)
         report(plan)
-        reasons = refusals(plan, args.accept_lost_journal_keys, args.accept_unconfirmed_journal_rows)
+        reasons = refusals(plan)
         if reasons:
             connection.rollback()
             print("REFUSED, nothing written" + (" (dry run)" if args.dry_run else "") + ":")
