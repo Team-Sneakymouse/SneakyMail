@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from import_pocketbase import (JournalRow, build_plan, convert_command, expected, lootbox_expiry, magic_item_names,
-                               magicspells_items, parse_uuid, reward_valid)
+                               magicspells_items, parse_uuid, refusals, reward_valid, strip_extra_keys)
 
 NOW = datetime(2026, 11, 18, 12, 0, tzinfo=timezone.utc)
 CREATED = "2026-01-02 03:04:05.678Z"
@@ -145,12 +145,42 @@ class Plan(unittest.TestCase):
         self.assertEqual([[], []], [row.rewards for row in plan.rows])
         self.assertEqual("", plan.rows[0].note)
 
-    def test_invalid_rewards_are_skipped_and_listed(self):
-        plan = plan_of(record("a", rewards=[cmd("")]), record("b", rewards=[{"type": "item", "item": "x"}]),
-                       {**record("c"), "rewards": {"type": "command"}})
+    def test_invalid_rewards_skip_claimed_mail_and_refuse_unclaimed_mail(self):
+        plan = plan_of(record("a", available=False, rewards=[cmd("")]),
+                       record("b", available=False, rewards=[{"type": "item", "item": "x"}]),
+                       {**record("c", available=False), "rewards": {"type": "command"}})
         self.assertEqual([], plan.rows)
-        self.assertEqual(3, plan.counts["skipped: invalid rewards"])
+        self.assertEqual(3, plan.counts["skipped: invalid rewards (claimed)"])
         self.assertEqual(3, len(plan.invalid))
+        self.assertEqual([], refusals(plan))
+
+        plan = plan_of(record("d", rewards=[{"type": "money", "amount": 5}]), {**record("e"), "rewards": "x"})
+        self.assertEqual(2, len(plan.invalid_unclaimed))
+        self.assertEqual(["2 unclaimed mails have rewards that are still invalid"], refusals(plan))
+
+    def test_keys_the_old_plugin_ignored_are_stripped(self):
+        self.assertEqual((cmd("x"), True), strip_extra_keys({"type": "command", "command": "x", "asConsole": True}))
+        self.assertEqual(({"type": "item", "item": "i", "amount": 2}, True),
+                         strip_extra_keys({"type": "item", "item": "i", "amount": 2, "note": ""}))
+        self.assertEqual((cmd("x"), False), strip_extra_keys(cmd("x")))
+        self.assertEqual(({"type": "command", "x": 1}, False), strip_extra_keys({"type": "command", "x": 1}))
+        plan = plan_of(record("a", rewards=[{"type": "command", "command": "ms magicitem item-EXP {player}", "extra": 1},
+                                             {"type": "command", "command": "say {player}", "asConsole": True}]))
+        self.assertEqual([{"type": "item", "item": "item-EXP", "amount": 1}, cmd("say {player}")], plan.rows[0].rewards)
+        self.assertEqual(2, plan.counts["rewards with extra keys, stripped"])
+        self.assertEqual([], refusals(plan))
+
+    def test_a_lootbox_number_that_is_no_time_is_reported(self):
+        huge = "9" * 30
+        with self.assertRaises((OverflowError, ValueError, OSError)):
+            lootbox_expiry(f"lootbox {{player}} {huge}")
+        plan = plan_of(record("claimed", available=False, rewards=[cmd(f"lootbox {{player}} {huge}")]),
+                       record("unclaimed", rewards=[cmd(f"lootbox {{player}} {huge} 3")]))
+        self.assertEqual({"claimed": None, "unclaimed": None}, {row.pb_id: row.expires_at for row in plan.rows})
+        self.assertEqual(1, len(plan.bad_times))
+        self.assertEqual(1, len(plan.bad_times_unclaimed))
+        self.assertIn("unclaimed (unclaimed)", plan.bad_times_unclaimed[0])
+        self.assertEqual(["1 unclaimed mails have a lootbox number that is no time"], refusals(plan))
 
     def test_source_keys_of_their_own(self):
         plan = plan_of(record("a", source_key="shop_1"), record("b", source_key="  "), record("c", source_key="shop_1", created="2026-02-01 00:00:00.000Z"))
@@ -166,23 +196,45 @@ class Plan(unittest.TestCase):
             "skipped": JournalRow("lomphone:4", payload, False),
             "gone": JournalRow("lomphone:5", payload, True),
             "converted": JournalRow("lomphone:6", {**payload, "command": "ms magicitem item-EXP {player}"}, True),
+            "lootbox": JournalRow("lomphone:7", {**payload, "command": f"lootbox {{player}} {FUTURE_MS}"}, True),
         }
         plan = plan_of(
             record("matching"), record("changed"), record("own-key", source_key="lomphone:other"),
             record("skipped", recipient="", name="nobody"),
             record("converted", rewards=[cmd("ms magicitem item-EXP {player}")]),
-            record("no-entry"),
+            record("lootbox", rewards=[cmd(f"lootbox {{player}} {FUTURE_MS}")]),
+            record("no-entry", rewards=[cmd("ms magicitem item-EXP {player}")]),
             journal=journal,
         )
         self.assertEqual({"matching": "lomphone:1", "changed": "lomphone:2", "own-key": "lomphone:other",
-                          "converted": "lomphone:6", "no-entry": None}, {row.pb_id: row.source_key for row in plan.rows})
-        self.assertEqual(["changed (key lomphone:2): note, rewards differ from the journal",
-                          "converted (key lomphone:6): rewards differ from the journal"], plan.journal_mismatches)
+                          "converted": "lomphone:6", "lootbox": "lomphone:7", "no-entry": None},
+                         {row.pb_id: row.source_key for row in plan.rows})
+        rows = {row.pb_id: row for row in plan.rows}
+        # Journal-keyed rows keep the admitted command and no expiry, so a retry with the same arguments matches send().
+        self.assertEqual([cmd("ms magicitem item-EXP {player}")], rows["converted"].rewards)
+        self.assertEqual(([cmd(f"lootbox {{player}} {FUTURE_MS}")], None), (rows["lootbox"].rewards, rows["lootbox"].expires_at))
+        self.assertEqual([{"type": "item", "item": "item-EXP", "amount": 1}], rows["no-entry"].rewards)
+        self.assertEqual(["changed (key lomphone:2): note, rewards differ from the journal"], plan.journal_mismatches)
         self.assertEqual(["gone (key lomphone:5): its PocketBase record is gone",
                           "own-key (key lomphone:3): its record carries another source key",
                           "skipped (key lomphone:4): its record is not imported"], plan.journal_unmatched)
-        self.assertEqual(["skipped"], plan.journal_unconfirmed)
-        self.assertEqual(3, plan.counts["source keys from the journal"])
+        self.assertEqual(["skipped (key lomphone:4)"], plan.journal_unconfirmed)
+        self.assertEqual(4, plan.counts["source keys from the journal"])
+        self.assertEqual(3, len(refusals(plan)))
+        self.assertEqual(["1 journal-keyed rows differ from their journal payload"],
+                         refusals(plan, accept_lost_keys=True, accept_unconfirmed=True), "a mismatch is never accepted")
+
+    def test_refusals_for_journal_keys_can_be_accepted_by_naming_the_outcome(self):
+        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
+        plan = plan_of(record("kept"), journal={"kept": JournalRow("k1", payload, False), "gone": JournalRow("k2", payload, True)})
+        self.assertEqual([], plan.journal_mismatches)
+        reasons = refusals(plan)
+        self.assertEqual(2, len(reasons))
+        self.assertIn("--accept-lost-journal-keys", reasons[0])
+        self.assertIn("--accept-unconfirmed-journal-rows", reasons[1])
+        self.assertEqual(1, len(refusals(plan, accept_lost_keys=True)))
+        self.assertEqual(1, len(refusals(plan, accept_unconfirmed=True)))
+        self.assertEqual([], refusals(plan, accept_lost_keys=True, accept_unconfirmed=True))
 
     def test_without_a_journal_records_keep_only_their_own_keys(self):
         plan = plan_of(record("a"), journal=None)

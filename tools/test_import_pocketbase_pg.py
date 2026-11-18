@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from import_pocketbase import Refused, build_plan, expected, prepare, write
+from import_pocketbase import Refused, build_plan, expected, prepare, refusals, write
 
 DSN = os.environ.get("SNEAKYMAIL_TEST_PG_DSN")
 MIGRATIONS = Path(__file__).resolve().parent.parent / "src/main/resources/db/migrations"
@@ -78,6 +78,7 @@ class ImportAgainstPostgres(unittest.TestCase):
             record("nobody", recipient="", name="nobody"),
         ], accounts, journal, {"item-EXP"}, NOW)
         self.assertEqual([], plan.journal_mismatches)
+        self.assertEqual([], refusals(plan))
         found = write(self.cur, plan)
         self.assertEqual(expected(plan), found)
         self.assertEqual({"mails": 4, "claimed": 1, "unclaimed": 3, "with source_key": 2, "with expires_at": 1,
