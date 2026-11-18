@@ -46,9 +46,10 @@ class MailClaims(
             player.sendMessage(Component.text("Make room in your inventory to collect this mail", NamedTextColor.RED))
             return false
         }
-        if (!cache.beginClaim(uuid, id)) return false
+        // The guard is per mail and outlives the player's session: a claim still running from before a rejoin blocks.
+        val claim = inFlight.start(id, uuid, player.name) ?: return false
+        cache.beginClaim(uuid, id)
         logger.info("Claiming mail $id for ${player.name} ($uuid)")
-        val claim = inFlight.start(id, uuid, player.name)
         try {
             store.claim(id, uuid).whenComplete { rewards, error ->
                 if (error != null) failed(claim, error) else finished(claim, rewards)
@@ -66,8 +67,8 @@ class MailClaims(
     fun shutdown() {
         val (running, claimed) = inFlight.shutdown()
         for (claim in running) {
-            logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}): its claim was still running when SneakyMail " +
-                "stopped, so it may be claimed without its rewards. Staff: check claimed_at of mail ${claim.id}")
+            logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}): its claim (started ${claim.startedAt}) was " +
+                "still running when SneakyMail stopped, so it may be claimed without its rewards. ${CHECK_LOGS.format(claim.id)}")
         }
         for (claim in claimed) deliver(claim, claim.rewards!!)
     }
@@ -75,8 +76,8 @@ class MailClaims(
     /** SneakyDB thread. */
     private fun failed(claim: ClaimsInFlight.Claim, error: Throwable) {
         val current = inFlight.failed(claim)
-        logger.severe("Claim of mail ${claim.id} for ${claim.name} (${claim.player}) failed (${error.javaClass.simpleName}); " +
-            "it may still have committed. Staff: check claimed_at of mail ${claim.id}")
+        logger.severe("Claim of mail ${claim.id} for ${claim.name} (${claim.player}, started ${claim.startedAt}) failed " +
+            "(${error.javaClass.simpleName}); it may still have committed. ${CHECK_LOGS.format(claim.id)}")
         if (!current) return
         onServerThread {
             cache.endClaim(claim.player, claim.id)
@@ -129,15 +130,26 @@ class MailClaims(
     private fun undo(claim: ClaimsInFlight.Claim, reason: String) {
         logger.warning("Mail ${claim.id} of ${claim.name} (${claim.player}) was claimed but $reason; giving it back")
         try {
-            store.unclaim(claim.id, claim.player).whenComplete { _, error -> if (error != null) undoFailed(claim) }
-        } catch (_: Exception) {
-            undoFailed(claim)
+            store.unclaim(claim.id, claim.player).whenComplete { _, error -> if (error != null) undoUncertain(claim, error) }
+        } catch (error: Exception) {
+            undoUncertain(claim, error)
         }
     }
 
-    private fun undoFailed(claim: ClaimsInFlight.Claim) {
-        logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}) is claimed but its rewards were not handed out " +
-            "and it could not be given back. Staff: set claimed_at of mail ${claim.id} to null")
+    /**
+     * The give-back failed or its reply was lost: it may have committed, and another server may have claimed and
+     * handed out the mail since. Never tell staff to reset it blindly.
+     */
+    private fun undoUncertain(claim: ClaimsInFlight.Claim, error: Throwable) {
+        logger.severe("Mail ${claim.id} of ${claim.name} (${claim.player}), claimed here at about ${claim.startedAt} without " +
+            "its rewards being handed out: giving it back failed or its reply was lost (${error.javaClass.simpleName}), so " +
+            "it may or may not be claimed now, and another server may have handed it out since. ${CHECK_LOGS.format(claim.id)}")
+    }
+
+    private companion object {
+        /** What staff do with a claim whose outcome is unknown; never a blind reset of claimed_at. */
+        const val CHECK_LOGS = "Staff: before touching claimed_at, search every server's log for \"mail %d \" (the Claiming, " +
+            "Redeeming and Redeemed lines) to see whether its rewards were handed out anywhere; give them by hand only if not"
     }
 
     /** Hands out every reward; one that fails is logged and the rest still run. The claim is never undone here. */

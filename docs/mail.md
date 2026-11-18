@@ -57,8 +57,13 @@ or a plain insert. Either shows up in game at once for an online recipient.
   is undone (`claimed_at` back to null, which sends `unclaimed`) so the mail shows again. On disable (players are
   still online then) a claim whose rewards are known but not yet handed out is handed out at once, or undone when the
   player is gone; a claim whose statement is still running is logged SEVERE with the mail id and uuid (it may have
-  been claimed without its rewards: staff check `claimed_at`); if it then claims after all, it is given back. A failed
-  claim statement is logged SEVERE too, since it may still have committed.
+  been claimed without its rewards); if it then claims after all, it is given back. A failed claim statement is
+  logged SEVERE too, since it may still have committed, and so is a give-back that failed or lost its reply (it may
+  have committed, and another server may have handed the mail out since). For all of these, staff search every
+  server's log for `mail <id> ` (the Claiming, Redeeming and Redeemed lines) before touching `claimed_at`; never reset
+  it blindly, which could reopen a redeemed mail.
+- **One claim per mail at a time:** a second claim of the same mail waits until the first one has settled, also when
+  the player reconnected meanwhile (the guard is per mail and lasts for the plugin's enable, not the session).
 - **`expires_at` is ignored by the plugin**: expired mail that the sweep hasn't deleted yet can still be claimed.
 - **Hooks kept for other plugins:** `NewMailEvent` (its `record` is a `MailRecord`) for new mail to an online
   recipient; the console cast `ms cast as <player> purchase-newmail` on new mail and on join with unread mail;
@@ -100,7 +105,8 @@ publishing the plugin publishes the API with the same commit-derived version fir
 `tools/import_pocketbase.py` copies `lom2_mail` into the empty table once, at the cutover; its docstring has the
 rules (skipped expired lootbox mail, recipients by name, `ms magicitem` to item rewards, source keys from the old
 journal) and how to run it. Run it with `--dry-run` first and read the report. It refuses to commit (also as the
-dry run's verdict) when a journal-keyed row differs from its journal payload, when an unclaimed mail would still be
+dry run's verdict) when a journal-keyed row (its key is in the journal, wherever the key came from) differs from its
+journal payload, when a record's own key and the journal pair differently, when an unclaimed mail would still be
 invalid, or when journal keys would be lost or journal rows are unconfirmed; the last two can be accepted with
 `--accept-lost-journal-keys` and `--accept-unconfirmed-journal-rows`. The old journal table
 `sneakymail.command_requests` stays until a later script drops it; the plugin no longer reads it.

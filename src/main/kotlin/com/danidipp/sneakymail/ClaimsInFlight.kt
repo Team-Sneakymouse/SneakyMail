@@ -1,11 +1,15 @@
 package com.danidipp.sneakymail
 
+import java.time.Instant
 import java.util.UUID
 
 /**
  * Claims between the claim statement and the hand-out of their rewards, so that a shutdown neither loses rewards nor
  * leaves a claim unexplained. No Bukkit. The claim statement completes on a SneakyDB thread; everything else runs on
  * the server thread.
+ *
+ * It lives as long as the plugin's enable, not a player's session: at most one attempt per mail is unsettled, also
+ * across a reconnect, and an attempt leaves only when it settles itself.
  */
 internal class ClaimsInFlight {
     enum class State { RUNNING, CLAIMED, SETTLED, ABANDONED }
@@ -22,7 +26,7 @@ internal class ClaimsInFlight {
         LATE_NOTHING,
     }
 
-    class Claim(val id: Long, val player: UUID, val name: String) {
+    class Claim(val id: Long, val player: UUID, val name: String, val startedAt: Instant) {
         var state = State.RUNNING
             internal set
         var rewards: List<MailReward>? = null
@@ -31,8 +35,12 @@ internal class ClaimsInFlight {
 
     private val claims = LinkedHashMap<Long, Claim>()
 
+    /** A new attempt for mail [id], or null while an earlier attempt for it is unsettled (a double click, a rejoin). */
     @Synchronized
-    fun start(id: Long, player: UUID, name: String): Claim = Claim(id, player, name).also { claims[id] = it }
+    fun start(id: Long, player: UUID, name: String, now: Instant = Instant.now()): Claim? {
+        if (claims.containsKey(id)) return null
+        return Claim(id, player, name, now).also { claims[id] = it }
+    }
 
     /** The statement returned [rewards] (null: no row). */
     @Synchronized
@@ -82,6 +90,6 @@ internal class ClaimsInFlight {
 
     private fun settle(claim: Claim) {
         claim.state = State.SETTLED
-        claims.remove(claim.id)
+        claims.remove(claim.id, claim) // exactly this attempt
     }
 }
