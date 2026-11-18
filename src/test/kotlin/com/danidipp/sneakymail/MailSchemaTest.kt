@@ -259,6 +259,25 @@ class MailSchemaTest {
     }
 
     @Test
+    fun `a claim waiting on a row locked elsewhere times out and claims nothing`() {
+        val id = send(null)
+        connect().use { holder ->
+            holder.autoCommit = false
+            holder.createStatement().use { it.executeQuery("select * from sneakymail.mail where id = $id for update").close() }
+            val started = System.nanoTime()
+            val error = assertFailsWith<java.util.concurrent.ExecutionException> { store.claim(id, alice).get(30, TimeUnit.SECONDS) }
+            val waited = (System.nanoTime() - started) / 1_000_000
+            val timedOut = assertIs<MailStore.ClaimTimedOut>(error.cause)
+            assertEquals("55P03", (timedOut.cause as SQLException).sqlState)
+            assertTrue(waited in 4_000..14_000, "gave up after the 5 s lock timeout, not the statement timeout: $waited ms")
+            assertEquals(0, count("claimed_at is not null"), "rolled back")
+            holder.rollback()
+        }
+        assertEquals(listOf(MailReward.CommandReward("say {player}")), store.claim(id, alice).get(10, TimeUnit.SECONDS),
+            "the next try works")
+    }
+
+    @Test
     fun `concurrent claims hand out the rewards once`() {
         val id = send(null)
         val results = (1..8).map { store.claim(id, alice) }.map { it.get(10, TimeUnit.SECONDS) }

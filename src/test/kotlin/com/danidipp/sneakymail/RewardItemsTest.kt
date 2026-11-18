@@ -15,21 +15,19 @@ class RewardItemsTest {
     }
 
     @Test
-    fun `giveAll runs every reward even when some fail or throw`() {
+    fun `giveAll runs every reward, reporting each given one before the next starts`() {
         val rewards = listOf(MailReward.CommandReward("a"), MailReward.CommandReward("b"), MailReward.ItemReward("c", 1), MailReward.CommandReward("d"))
-        val given = mutableListOf<MailReward>()
-        val failures = mutableListOf<Pair<MailReward, String?>>()
-        val failed = RewardItems.giveAll(rewards, { reward ->
-            given += reward
+        val events = mutableListOf<String>()
+        val failed = RewardItems.giveAll(rewards, { index, reward ->
+            events += "give $index"
             when (reward) {
                 MailReward.CommandReward("b") -> false
                 is MailReward.ItemReward -> throw IllegalStateException("boom")
                 else -> true
             }
-        }) { reward, error -> failures += reward to error?.message }
-        assertEquals(rewards, given)
+        }, given = { index, _ -> events += "given $index" }) { index, _, error -> events += "failed $index ${error?.message}" }
         assertEquals(2, failed)
-        assertEquals(listOf<Pair<MailReward, String?>>(MailReward.CommandReward("b") to null, MailReward.ItemReward("c", 1) to "boom"), failures)
+        assertEquals(listOf("give 0", "given 0", "give 1", "failed 1 null", "give 2", "failed 2 boom", "give 3", "given 3"), events)
     }
 
     @Test

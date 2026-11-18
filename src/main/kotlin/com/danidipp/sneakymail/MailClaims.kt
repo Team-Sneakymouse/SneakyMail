@@ -74,8 +74,21 @@ class MailClaims(
     }
 
     /** SneakyDB thread. */
-    private fun failed(claim: ClaimsInFlight.Claim, error: Throwable) {
+    private fun failed(claim: ClaimsInFlight.Claim, failure: Throwable) {
         val current = inFlight.failed(claim)
+        val error = unwrap(failure)
+        if (error is MailStore.ClaimTimedOut) {
+            // Rolled back: the mail was definitely not claimed, so the player may simply try again.
+            logger.warning("Claim of mail ${claim.id} for ${claim.name} (${claim.player}) timed out waiting for the row " +
+                "(${error.cause?.javaClass?.simpleName}); nothing was claimed")
+            if (!current) return
+            onServerThread {
+                cache.endClaim(claim.player, claim.id)
+                Bukkit.getPlayer(claim.player)?.sendMessage(
+                    Component.text("This mail is busy right now. Please try again in a moment", NamedTextColor.RED))
+            }
+            return
+        }
         logger.severe("Claim of mail ${claim.id} for ${claim.name} (${claim.player}, started ${claim.startedAt}) failed " +
             "(${error.javaClass.simpleName}); it may still have committed. ${CHECK_LOGS.format(claim.id)}")
         if (!current) return
@@ -147,43 +160,54 @@ class MailClaims(
     }
 
     private companion object {
-        /** What staff do with a claim whose outcome is unknown; never a blind reset of claimed_at. */
-        const val CHECK_LOGS = "Staff: before touching claimed_at, search every server's log for \"mail %d \" (the Claiming, " +
-            "Redeeming and Redeemed lines) to see whether its rewards were handed out anywhere; give them by hand only if not"
+        /** What staff do with a claim whose outcome is unknown; never a blind reset of claimed_at or a blanket re-give. */
+        const val CHECK_LOGS = "Staff: before touching claimed_at, search every server's log for \"mail %d \": the Claiming " +
+            "line, one Gave or failed line per reward, and the Redeemed line. Give by hand only rewards that have no Gave " +
+            "line on any server, after checking the game state where a reward shows (balance, inventory); never reset " +
+            "claimed_at blindly"
+
+        fun unwrap(error: Throwable): Throwable {
+            var current = error
+            while ((current is java.util.concurrent.CompletionException || current is java.util.concurrent.ExecutionException) &&
+                current.cause != null) current = current.cause!!
+            return current
+        }
     }
 
-    /** Hands out every reward; one that fails is logged and the rest still run. The claim is never undone here. */
+    /**
+     * Hands out every reward; one that fails is logged and the rest still run. Each reward given is logged before the
+     * next one starts, so an interrupted redemption shows which rewards ran. The claim is never undone here.
+     */
     private fun give(player: Player, id: Long, rewards: List<MailReward>) {
-        val failed = RewardItems.giveAll(rewards, { giveOne(player, id, it) }) { reward, error ->
-            // giveOne logs why it returned false; an exception is logged here.
-            if (error != null) logger.severe("Mail $id of ${player.name} (${player.uniqueId}): reward ${MailRewards.encode(reward)} " +
-                "failed (${error.javaClass.simpleName}: ${error.message}); give it by hand")
+        val who = "${player.name} (${player.uniqueId})"
+        val failed = RewardItems.giveAll(rewards, { _, reward -> giveOne(player, id, reward) },
+            given = { index, reward -> logger.info("Gave reward ${index + 1}/${rewards.size} of mail $id to $who: ${MailRewards.encode(reward)}") },
+        ) { index, reward, error ->
+            val why = if (error != null) "${error.javaClass.simpleName}: ${error.message}" else "see the line above"
+            logger.severe("Reward ${index + 1}/${rewards.size} of mail $id for $who failed ($why): ${MailRewards.encode(reward)}; " +
+                "give it by hand after checking the game state")
         }
         if (failed > 0) {
             player.sendMessage(Component.text("Part of this mail could not be given. Please tell staff", NamedTextColor.RED))
         }
-        logger.info("Redeemed mail $id for ${player.name} (${player.uniqueId}): ${rewards.size - failed} of ${rewards.size} rewards given")
+        logger.info("Redeemed mail $id for $who: ${rewards.size - failed} of ${rewards.size} rewards given")
     }
 
     private fun giveOne(player: Player, id: Long, reward: MailReward): Boolean = when (reward) {
         is MailReward.CommandReward -> {
             // Templates come from trusted senders: they run as console. The note is display text only.
             val command = reward.command.replace("{player}", player.name)
-            logger.info("Redeeming ${player.name}'s mail $id with command: $command")
             Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command).also { ok ->
-                if (!ok) logger.severe("Mail $id of ${player.name} (${player.uniqueId}): reward ${MailRewards.encode(reward)} " +
-                    "failed (the command was not found or refused); give it by hand")
+                if (!ok) logger.warning("Mail $id: the console did not run `$command` (unknown or refused command)")
             }
         }
         is MailReward.ItemReward -> {
             val item = SneakyItemsAPI.getByInternalName(reward.item)
             val maxStack = item?.itemStack?.maxStackSize
             if (item == null || maxStack == null) {
-                logger.severe("Mail $id of ${player.name} (${player.uniqueId}): reward ${MailRewards.encode(reward)} failed " +
-                    "(SneakyItems no longer knows the item); give it by hand")
+                logger.warning("Mail $id: SneakyItems no longer knows the item ${reward.item}")
                 false
             } else {
-                logger.info("Redeeming ${player.name}'s mail $id with item: ${reward.item} x${reward.amount}")
                 val stacks = RewardItems.stackAmounts(reward.amount, maxStack).mapNotNull { item.createFor(player, it) }
                 for (leftover in player.inventory.addItem(*stacks.toTypedArray()).values) {
                     player.world.dropItem(player.location, leftover).owner = player.uniqueId

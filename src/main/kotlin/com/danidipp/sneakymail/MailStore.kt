@@ -1,6 +1,7 @@
 package com.danidipp.sneakymail
 
 import com.sneakydb.SneakyDBApi
+import java.sql.SQLException
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.logging.Logger
@@ -19,11 +20,27 @@ class MailStore(private val db: SneakyDBApi, private val logger: Logger) {
     /**
      * Claims mail [id] for [recipient]: the rewards when this call claimed it, null when no unclaimed mail [id] of
      * [recipient] exists (already claimed, deleted, or someone else's).
+     *
+     * The statement runs in its own transaction with a lock and a statement timeout, so a row locked elsewhere (an
+     * idle DBeaver transaction) can't hold the claim forever. When the statement times out the future fails with
+     * [ClaimTimedOut]: the transaction rolled back, so the mail was definitely not claimed. Any other failure may
+     * still have committed.
      */
     fun claim(id: Long, recipient: UUID): CompletableFuture<List<MailReward>?> =
-        db.query(CLAIM, listOf(id, recipient)).thenApply { rows ->
+        db.transaction { tx ->
+            tx.execute(LOCK_TIMEOUT, emptyList<Any>())
+            tx.execute(STATEMENT_TIMEOUT, emptyList<Any>())
+            val rows = try {
+                tx.query(CLAIM, listOf(id, recipient))
+            } catch (error: SQLException) {
+                if (error.sqlState in TIMEOUT_STATES) throw ClaimTimedOut(id, error)
+                throw error
+            }
             rows.singleOrNull()?.let { MailRewards.parse(text(it["rewards"])) }
         }
+
+    /** The claim statement of mail [id] hit its lock or statement timeout and was rolled back: nothing was claimed. */
+    class ClaimTimedOut(val id: Long, cause: SQLException) : RuntimeException("Claim of mail $id timed out", cause)
 
     /** Undoes a claim whose rewards were never handed out (the player left or the plugin stopped meanwhile). */
     fun unclaim(id: Long, recipient: UUID): CompletableFuture<Int> = db.execute(UNCLAIM, listOf(id, recipient))
@@ -60,6 +77,12 @@ class MailStore(private val db: SneakyDBApi, private val logger: Logger) {
         /** The claim statement of the shared contract: rewards come back only to the one call that claimed. */
         const val CLAIM = "update sneakymail.mail set claimed_at = now() where id = ? and recipient_uuid = ? " +
             "and claimed_at is null returning rewards"
+
+        const val LOCK_TIMEOUT = "set local lock_timeout = '5s'"
+        const val STATEMENT_TIMEOUT = "set local statement_timeout = '15s'"
+
+        /** lock_not_available (lock_timeout) and query_canceled (statement_timeout). */
+        val TIMEOUT_STATES = setOf("55P03", "57014")
 
         const val UNCLAIM = "update sneakymail.mail set claimed_at = null where id = ? and recipient_uuid = ? " +
             "and claimed_at is not null"
