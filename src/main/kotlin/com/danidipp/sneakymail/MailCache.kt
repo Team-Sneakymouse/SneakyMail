@@ -111,7 +111,10 @@ class MailCache(
         state.loading = false
         if (players[player] !== state) return // quit meanwhile (and maybe joined again with a new state)
         if (error != null || rows == null) {
-            logger.warning("Could not load mail of $player: ${error?.javaClass?.simpleName}")
+            val cause = if (error is java.util.concurrent.CompletionException && error.cause != null) error.cause else error
+            val state = (cause as? java.sql.SQLException)?.sqlState?.let { ", SQLSTATE $it" } ?: ""
+            logger.warning("Could not load mail of $player (${cause?.javaClass?.simpleName}$state); the next notification, " +
+                "reconnect or rejoin loads it again")
         } else {
             // A mail gone during this load is followed by another load (gone() asked for it), which decides for good.
             state.mail = rows.filter { it.id !in state.goneDuringLoad }.associateBy { it.id }

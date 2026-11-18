@@ -303,6 +303,22 @@ class MailSchemaTest {
     }
 
     @Test
+    fun `a cache load gives up while an operator holds the table locked`() {
+        val id = send(null)
+        connect().use { holder ->
+            holder.autoCommit = false
+            holder.createStatement().use { it.execute("lock table sneakymail.mail in access exclusive mode") }
+            val started = System.nanoTime()
+            val error = assertFailsWith<java.util.concurrent.ExecutionException> { store.unclaimedFor(alice).get(30, TimeUnit.SECONDS) }
+            val waited = (System.nanoTime() - started) / 1_000_000
+            assertEquals("55P03", (error.cause as SQLException).sqlState)
+            assertTrue(waited in 4_000..14_000, "gave up after the 5 s lock timeout: $waited ms")
+            holder.rollback()
+        }
+        assertEquals(listOf(id), store.unclaimedFor(alice).get(10, TimeUnit.SECONDS).map { it.id }, "the next load works")
+    }
+
+    @Test
     fun `concurrent claims hand out the rewards once`() {
         val id = send(null)
         val results = (1..8).map { store.claim(id, alice) }.map { it.get(10, TimeUnit.SECONDS) }

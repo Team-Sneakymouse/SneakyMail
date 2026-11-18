@@ -13,9 +13,16 @@ import java.util.logging.Logger
 class MailStore(private val db: SneakyDBApi, private val logger: Logger) {
     fun isAvailable(): Boolean = db.isAvailable()
 
-    /** [recipient]'s unclaimed mail, oldest first. A row whose rewards don't parse is left out and logged. */
+    /**
+     * [recipient]'s unclaimed mail, oldest first. A row whose rewards don't parse is left out and logged. Runs with the
+     * same lock and statement timeouts as [claim], so a lock held on the table can't keep loads on every SneakyDB worker.
+     */
     fun unclaimedFor(recipient: UUID): CompletableFuture<List<MailRecord>> =
-        db.query(UNCLAIMED, listOf(recipient)).thenApply { rows -> rows.mapNotNull(::toRecord) }
+        db.transaction { tx ->
+            tx.execute(LOCK_TIMEOUT, emptyList<Any>())
+            tx.execute(STATEMENT_TIMEOUT, emptyList<Any>())
+            tx.query(UNCLAIMED, listOf(recipient))
+        }.thenApply { rows -> rows.mapNotNull(::toRecord) }
 
     /**
      * Claims mail [id] for [recipient]: the rewards when this call claimed it, null when no unclaimed mail [id] of

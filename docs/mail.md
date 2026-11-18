@@ -35,7 +35,10 @@ or a plain insert. Either shows up in game at once for an online recipient.
   notification on channel `sneakymail` reloads the recipient from the database (`claimed` and `deleted` also drop the
   mail at once); when the subscription (re)connects, every online player is reloaded, because notifications sent while
   it was down are lost. Loads of one player run one after another, and a load that ran while a mail was claimed
-  can't bring it back. Notification and database callbacks run off the server thread and are rescheduled onto it.
+  can't bring it back. A load runs with the same 5 s lock / 15 s statement timeouts as the claim, so a lock held on
+  the table (an operator's `lock table`) fails that load with a warning instead of tying up SneakyDB's workers; the
+  next notification, reconnect or rejoin loads it again. Notification and database callbacks run off the server
+  thread and are rescheduled onto it.
 - **Claiming** (`MailClaims`): on the server thread SneakyMail checks that SneakyItems knows every item reward and
   that the player's inventory has room for all of them; otherwise the mail stays and the player is told to tell staff
   or to make room. Then, off the server thread, the claim statement, in its own transaction with
