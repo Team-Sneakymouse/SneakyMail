@@ -30,12 +30,14 @@ Rules (decided by the project owner, 2026-11-18):
   way MagicSpells loads them) or an --items-file has are listed; they still convert. Other commands stay commands.
 - Keys of a reward that the old plugin ignored (it decoded with ignoreUnknownKeys) are stripped and counted.
 - source_key: the record's own source_key when it has one; otherwise, if sneakymail.command_requests exists, the
-  source_key of the journal row whose request_id is the record's id. Such a journal-keyed row keeps the admitted
-  payload exactly (its command is not converted, expires_at stays null), because lom-phone-app retries an old key
-  with the journal's payload and sneakymail.send compares it.
+  source_key of the journal row whose request_id is the record's id. A row whose key is in the journal, wherever the
+  key came from, keeps the admitted payload exactly (its command is not converted, expires_at stays null), because
+  lom-phone-app retries an old key with the journal's payload and sneakymail.send compares it.
 
 It refuses to commit, in a dry run too (exit code 1), when:
 - a journal-keyed row still differs from its journal payload (recipient, sender, note, the single command);
+- a record's own source key and the journal disagree (the journal gives the record another key, or the key to
+  another record);
 - a journal key ends up on no imported row (record gone, skipped or carrying another key), unless
   --accept-lost-journal-keys accepts that a retry of those keys sends the mail again;
 - a journal row was never confirmed, unless --accept-unconfirmed-journal-rows accepts that its mail is not sent again;
@@ -206,6 +208,7 @@ class Plan:
     unknown_items_unclaimed: Counter = field(default_factory=Counter)
     kept_magicitem_commands: Counter = field(default_factory=Counter)  # `ms magicitem` commands that stay commands
     journal_mismatches: list[str] = field(default_factory=list)  # refuse
+    journal_conflicts: list[str] = field(default_factory=list)  # a key and a record the journal doesn't pair: refuse
     journal_unmatched: list[str] = field(default_factory=list)  # journal keys no imported row carries: refuse
     journal_unconfirmed: list[str] = field(default_factory=list)  # refuse
     duplicate_keys: list[str] = field(default_factory=list)
@@ -243,6 +246,7 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
     plan = Plan()
     counts = plan.counts
     used_keys: dict[str, str] = {}
+    journal_by_key = {entry.source_key: request_id for request_id, entry in (journal or {}).items()}
     for record in sorted(records, key=lambda r: (r.get("created") or "", r["id"])):
         counts["records"] += 1
         available = bool(record.get("available"))
@@ -261,9 +265,21 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
             counts["rewards with extra keys, stripped"] += extra
             stripped.append(reward)
 
-        # A journal-keyed row keeps exactly what lom-phone-app was told was admitted: send() compares a retry with it.
+        # A row whose key is in the journal, wherever the key came from, keeps exactly what lom-phone-app was told was
+        # admitted: send() compares a retry with it.
         own_key = (record.get("source_key") or "").strip() or None
-        entry = journal.get(record["id"]) if journal is not None and own_key is None else None
+        entry = None
+        if journal is not None:
+            by_id = journal.get(record["id"])
+            keyed_request = journal_by_key.get(own_key) if own_key is not None else None
+            if own_key is not None and by_id is not None and by_id.source_key != own_key:
+                plan.journal_conflicts.append(f"{record['id']}: carries key {own_key}, but the journal gives it key "
+                                              f"{by_id.source_key}")
+            elif keyed_request is not None and keyed_request != record["id"]:
+                plan.journal_conflicts.append(f"{record['id']}: carries key {own_key}, which the journal gives to "
+                                              f"request {keyed_request}")
+            else:
+                entry = by_id if by_id is not None else (journal[keyed_request] if keyed_request is not None else None)
 
         # Lootbox expiry: the earliest time among the mail's lootbox commands.
         expiry = None
@@ -319,9 +335,12 @@ def build_plan(records: list[dict], accounts: dict[str, list[str]], journal: dic
         key = own_key
         if key is not None:
             counts["source keys of their own"] += 1
-        elif entry is not None:
-            key = entry.source_key
-            counts["source keys from the journal"] += 1
+        if entry is not None:
+            if key is None:
+                key = entry.source_key
+                counts["source keys from the journal"] += 1
+            else:
+                counts["source keys of their own that are in the journal"] += 1
             payload = entry.payload
             wanted = {"recipient": payload.get("recipient_uuid"), "sender": payload.get("sender_name"),
                       "note": payload.get("note"), "rewards": [{"type": "command", "command": payload.get("command")}]}
@@ -382,6 +401,8 @@ def refusals(plan: Plan, accept_lost_keys: bool = False, accept_unconfirmed: boo
     reasons = []
     if plan.journal_mismatches:
         reasons.append(f"{len(plan.journal_mismatches)} journal-keyed rows differ from their journal payload")
+    if plan.journal_conflicts:
+        reasons.append(f"{len(plan.journal_conflicts)} records carry a source key the journal pairs differently")
     if plan.journal_unmatched and not accept_lost_keys:
         reasons.append(f"{len(plan.journal_unmatched)} journal keys would not be imported, so a lom-phone-app retry "
                        f"would send that mail again (accept that with {ACCEPT_LOST})")
@@ -542,6 +563,7 @@ def report(plan: Plan) -> None:
               f"{sum(plan.unresolved_names.values())} mails")
     for title, lines in (
         ("JOURNAL MISMATCH (lom-phone-app retrying these keys gets 'different payload')", plan.journal_mismatches),
+        ("JOURNAL CONFLICT (a record's own key and the journal disagree)", plan.journal_conflicts),
         ("journal keys not imported (lom-phone-app retrying them would send the mail again)", plan.journal_unmatched),
         ("journal rows never confirmed (their mail may never have reached PocketBase)", plan.journal_unconfirmed),
         ("UNCLAIMED MAIL WITH INVALID REWARDS", plan.invalid_unclaimed),

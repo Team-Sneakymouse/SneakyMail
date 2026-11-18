@@ -220,9 +220,34 @@ class Plan(unittest.TestCase):
                           "skipped (key lomphone:4): its record is not imported"], plan.journal_unmatched)
         self.assertEqual(["skipped (key lomphone:4)"], plan.journal_unconfirmed)
         self.assertEqual(4, plan.counts["source keys from the journal"])
-        self.assertEqual(3, len(refusals(plan)))
-        self.assertEqual(["1 journal-keyed rows differ from their journal payload"],
-                         refusals(plan, accept_lost_keys=True, accept_unconfirmed=True), "a mismatch is never accepted")
+        self.assertEqual(["own-key: carries key lomphone:other, but the journal gives it key lomphone:3"], plan.journal_conflicts)
+        self.assertEqual(4, len(refusals(plan)))
+        self.assertEqual(["1 journal-keyed rows differ from their journal payload",
+                          "1 records carry a source key the journal pairs differently"],
+                         refusals(plan, accept_lost_keys=True, accept_unconfirmed=True), "mismatches and conflicts are never accepted")
+
+    def test_a_record_carrying_its_journal_key_itself_is_checked_and_kept_exact(self):
+        payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello",
+                   "command": "ms magicitem item-EXP {player}"}
+        journal = {"self-keyed": JournalRow("lomphone:1", payload, True),
+                   "changed": JournalRow("lomphone:2", payload, True),
+                   "elsewhere": JournalRow("lomphone:3", payload, True)}
+        plan = plan_of(
+            record("self-keyed", source_key="lomphone:1", rewards=[cmd("ms magicitem item-EXP {player}")]),
+            record("changed", source_key="lomphone:2", recipient=BOB, rewards=[cmd(f"lootbox {{player}} {FUTURE_MS}")]),
+            record("thief", source_key="lomphone:3", rewards=[cmd("ms magicitem item-EXP {player}")]),
+            journal=journal,
+        )
+        rows = {row.pb_id: row for row in plan.rows}
+        self.assertEqual(([cmd("ms magicitem item-EXP {player}")], None, "lomphone:1"),
+                         (rows["self-keyed"].rewards, rows["self-keyed"].expires_at, rows["self-keyed"].source_key))
+        self.assertIsNone(rows["changed"].expires_at, "a journal key never gets an expiry")
+        self.assertEqual(["changed (key lomphone:2): recipient, rewards differ from the journal"], plan.journal_mismatches)
+        self.assertEqual(["thief: carries key lomphone:3, which the journal gives to request elsewhere"], plan.journal_conflicts)
+        self.assertEqual([{"type": "item", "item": "item-EXP", "amount": 1}], rows["thief"].rewards,
+                         "a conflicting record is not treated as the journal's")
+        self.assertEqual(2, plan.counts["source keys of their own that are in the journal"])
+        self.assertEqual(2, len(refusals(plan, accept_lost_keys=True, accept_unconfirmed=True)))
 
     def test_refusals_for_journal_keys_can_be_accepted_by_naming_the_outcome(self):
         payload = {"recipient_uuid": ALICE, "sender_name": "<gold>Mother Mouse</gold>", "note": "Hello", "command": "say {player}"}
