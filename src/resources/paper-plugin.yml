@@ -22,9 +22,6 @@ dependencies:
     PlaceholderAPI:
       load: BEFORE
       required: false
-    MagicSpells:
-      load: BEFORE
-      required: false
 commands:
   mail:
     description: "Opens mail interface"

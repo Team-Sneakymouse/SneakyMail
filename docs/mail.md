@@ -72,9 +72,12 @@ or a plain insert. Either shows up in game at once for an online recipient.
   (balance, inventory, the item itself), because a crash can come right after a reward ran but before its line. Never
   re-give all rewards and never reset `claimed_at`.
 - **`expires_at` is ignored by the plugin**: expired mail that the sweep hasn't deleted yet can still be claimed.
+- **New mail notice** (`MailNotices`): on new mail to an online recipient and on join with unread mail, the player
+  gets a chat line "You have <n> unread mail!" that opens `/mail` when clicked, and a toast "You got Mail! /mail to
+  access it!" with the `lom:icons/mailcarrier` icon (SneakyUtils `ToastUtil`; when the toast can't be sent, only the chat line shows).
+  It replaces the old console cast `ms cast as <player> purchase-newmail`, whose spell is gone from MagicSpells-Data.
 - **Hooks kept for other plugins:** `NewMailEvent` (its `record` is a `MailRecord`) for new mail to an online
-  recipient; the console cast `ms cast as <player> purchase-newmail` on new mail and on join with unread mail;
-  PlaceholderAPI `%sneakymail_unread_count%`.
+  recipient; PlaceholderAPI `%sneakymail_unread_count%`.
 - **Commands:** `/mail` (`sneakymail.mail`) opens the GUI; `/mailcheck [id]` (`sneakymail.admin`) shows the cache.
 - **Startup:** SneakyDB and SneakyItems are required. The plugin registers its migrations during enable and does
   nothing with its table until they are applied; when they fail, `/mail` says mail is not available.
